@@ -1,0 +1,231 @@
+name: Announce release
+
+# Posts a Telegram rich message announcing a release. Reusable: call it from a
+# release workflow once the artifact is actually installable, e.g.
+#
+#   announce:
+#     needs: publish
+#     uses: Pepebits/release-announce/.github/workflows/announce.yml@v1
+#     with:
+#       tag: ${{ github.ref_name }}
+#     secrets: inherit
+#
+# See the README for every input. Callers decide when to run it (and on what
+# trigger); this file only builds the message and sends it.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to announce, vX.Y.Z
+        type: string
+        required: true
+      project_name:
+        description: Name shown in the title. Defaults to the repository name.
+        type: string
+        default: ''
+      notes_source:
+        description: "tag (the annotated tag's message) or changelog (its section of a Keep a Changelog file)"
+        type: string
+        default: tag
+      changelog_path:
+        description: Keep a Changelog file, read at the tag. Only for notes_source changelog.
+        type: string
+        default: CHANGELOG.md
+      install_title:
+        description: Heading above the install command, e.g. "🐳 Docker image"
+        type: string
+        default: 📦 Install
+      install_command:
+        description: Command people paste to get this version; {version} and {tag} are replaced. Empty omits the section.
+        type: string
+        default: ''
+      install_language:
+        description: Syntax highlighting of the install command
+        type: string
+        default: bash
+      buttons:
+        description: 'JSON array of {text, url}; {version}, {minor}, {tag} and {repo_url} are replaced in the url. Default: one Notes button to the GitHub release.'
+        type: string
+        default: '[{"text":"📝 Notes","url":"{repo_url}/releases/tag/{tag}"}]'
+      banner_path:
+        description: Banner image in the repository, used only if it exists at the tag
+        type: string
+        default: docs/banner.png
+      footer:
+        description: Closing line; {version}, {minor} and {tag} are replaced. Empty omits it.
+        type: string
+        default: ''
+      chat:
+        description: "announcements (the real channel) or test (TELEGRAM_TEST_CHAT_ID)"
+        type: string
+        default: announcements
+      dry_run:
+        description: Only print the message, send nothing
+        type: boolean
+        default: false
+    # Optional: a fork without them skips the announcement instead of failing.
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
+      TELEGRAM_TEST_CHAT_ID:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      # Inputs reach the scripts through the environment, never through ${{ }}
+      # inside `run:` — a crafted tag name would otherwise be shell code.
+      TAG: ${{ inputs.tag }}
+      PROJECT_NAME: ${{ inputs.project_name || github.event.repository.name }}
+      NOTES_SOURCE: ${{ inputs.notes_source }}
+      CHANGELOG_PATH: ${{ inputs.changelog_path }}
+      INSTALL_TITLE: ${{ inputs.install_title }}
+      INSTALL_COMMAND: ${{ inputs.install_command }}
+      INSTALL_LANGUAGE: ${{ inputs.install_language }}
+      BUTTONS: ${{ inputs.buttons }}
+      BANNER_PATH: ${{ inputs.banner_path }}
+      FOOTER: ${{ inputs.footer }}
+      CHAT: ${{ inputs.chat }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID }}
+
+    steps:
+      - name: Check the inputs
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z)"
+            exit 1
+          fi
+          case "$NOTES_SOURCE" in tag | changelog) ;; *)
+            echo "::error::notes_source must be 'tag' or 'changelog', not '$NOTES_SOURCE'"
+            exit 1 ;;
+          esac
+          case "$CHAT" in announcements | test) ;; *)
+            echo "::error::chat must be 'announcements' or 'test', not '$CHAT'"
+            exit 1 ;;
+          esac
+          if ! jq -e 'type == "array" and all(.[]; (.text | type == "string") and (.url | type == "string"))' <<< "$BUTTONS" > /dev/null; then
+            echo "::error::buttons must be a JSON array of {text, url}"
+            exit 1
+          fi
+
+      # The caller's repository: the tag, the changelog and the banner live
+      # there.
+      - uses: actions/checkout@v7
+
+      # The jq program lives in this repository, but a reusable workflow runs
+      # in the caller's workspace, so a plain checkout never sees it. It is
+      # fetched at the exact commit this workflow file was loaded from
+      # (job_workflow_sha) rather than at a branch, so `@v1` and a pinned sha
+      # both get the program that goes with them. Preferred over inlining the
+      # program in this file: the tests run the very same file.
+      - uses: actions/checkout@v7
+        with:
+          repository: Pepebits/release-announce
+          ref: ${{ github.job_workflow_sha }}
+          path: .release-announce
+          persist-credentials: false
+
+      # actions/checkout replaces an annotated tag with a lightweight one
+      # pointing at the commit (actions/checkout#290), and a manual run does
+      # not fetch it at all — either way the release notes would be lost.
+      # Fetching the tag object itself keeps its message.
+      - name: Fetch the annotated tag
+        run: git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+
+      - name: Build the message
+        id: build
+        run: |
+          # Chosen here rather than with `cond && a || b` in the env block:
+          # that idiom falls through to the real channel whenever the test
+          # chat secret is empty.
+          if [ "$CHAT" = test ]; then chat_id="$TELEGRAM_TEST_CHAT_ID"; else chat_id="$TELEGRAM_CHAT_ID"; fi
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$chat_id" ]; then
+            echo "::notice::No bot token or chat id secret for this target; the message is built but not sent"
+          elif [ "$DRY_RUN" != true ]; then
+            echo "send=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          version="${TAG#v}"
+          subject=""
+          if [ "$NOTES_SOURCE" = changelog ]; then
+            # Read at the tag, not from the checked-out branch: a manual run
+            # may be on a later commit whose changelog has moved on.
+            git show "$TAG:$CHANGELOG_PATH" > "$RUNNER_TEMP/notes.txt" \
+              || { echo "::error::$CHANGELOG_PATH does not exist at $TAG"; exit 1; }
+            if ! grep -Eq "^##[[:space:]]+\[?v?${version//./\\.}\]?([[:space:]]|$)" "$RUNNER_TEMP/notes.txt"; then
+              echo "::warning::$CHANGELOG_PATH has no section for $version; announcing it without notes"
+            fi
+          else
+            if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+              echo "::warning::$TAG is a lightweight tag; announcing it without notes"
+            fi
+            subject="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG")"
+            git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > "$RUNNER_TEMP/notes.txt"
+          fi
+
+          # Telegram fetches the banner itself, so it is linked at the tag
+          # rather than at main: a later redesign must not change an old post.
+          banner_url=""
+          if git cat-file -e "refs/tags/$TAG:$BANNER_PATH" 2>/dev/null; then
+            banner_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/$BANNER_PATH"
+          fi
+
+          # Rich messages take up to 32768 characters; the jq program cuts the
+          # notes at 30000 so a runaway changelog cannot lose the announcement.
+          # The full notes are one tap away on GitHub. The head only stops jq
+          # from slurping something absurd.
+          head -c 2000000 "$RUNNER_TEMP/notes.txt" \
+            | jq -R -s -f .release-announce/.github/announce.jq \
+                --arg mode "$NOTES_SOURCE" \
+                --arg chat_id "$chat_id" \
+                --arg tag "$TAG" \
+                --arg version "$version" \
+                --arg minor "$(cut -d. -f1,2 <<< "$version")" \
+                --arg subject "${subject:-$TAG}" \
+                --arg repo_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+                --arg project_name "$PROJECT_NAME" \
+                --arg install_title "$INSTALL_TITLE" \
+                --arg install_command "$INSTALL_COMMAND" \
+                --arg install_language "$INSTALL_LANGUAGE" \
+                --argjson buttons "$BUTTONS" \
+                --arg banner_url "$banner_url" \
+                --arg footer "$FOOTER" \
+            > "$RUNNER_TEMP/message.json"
+          # chat_id is a secret, so it shows as *** here.
+          jq . "$RUNNER_TEMP/message.json"
+
+      # The release is already public by the time this runs, so a Telegram
+      # outage or a revoked bot must not turn a good release red. A failure
+      # still shows as a warning on the run.
+      - name: Send to Telegram
+        if: steps.build.outputs.send == 'true'
+        continue-on-error: true
+        run: |
+          # The token lives in the URL, so the URL goes to curl on stdin rather
+          # than on its command line: it never appears in `ps`, in a `set -x`
+          # trace or in a curl error message. Secrets are masked in the log
+          # anyway; this keeps it out of everything else.
+          printf 'url = "https://api.telegram.org/bot%s/sendRichMessage"\n' "$TELEGRAM_BOT_TOKEN" \
+            | curl --config - --silent --show-error \
+                --max-time 30 --retry 3 --retry-delay 5 \
+                --header 'Content-Type: application/json' \
+                --data-binary "@$RUNNER_TEMP/message.json" \
+                --output "$RUNNER_TEMP/response.json" \
+            || true
+          if [ "$(jq -r '.ok' "$RUNNER_TEMP/response.json" 2>/dev/null)" != true ]; then
+            reason="$(jq -r '"\(.error_code) \(.description)"' "$RUNNER_TEMP/response.json" 2>/dev/null || echo 'no response')"
+            echo "::warning::Telegram announcement not sent: $reason"
+            exit 1
+          fi
+          echo "Sent as message $(jq -r '.result.message_id' "$RUNNER_TEMP/response.json")"
