@@ -6,12 +6,16 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
-if [ -n "${KEEP:-}" ]; then trap - EXIT; fi
+
+# The program lives inline in the workflow (see the comment there); pull out
+# the lines of its heredoc, minus the YAML indentation.
+sed -n "/<<'JQ'/,/^ *JQ\$/p" "$root/.github/workflows/announce.yml" | sed '1d;$d' | sed 's/^          //' > "$out/announce.jq"
+[ -s "$out/announce.jq" ] || { echo "could not find the jq program in announce.yml"; exit 1; }
 
 # build <mode> <notes file> <name> <tag> [extra jq args…] > $out/<name>.json
 build() {
   local mode="$1" notes="$2" name="$3" tag="$4"; shift 4
-  jq -R -s -f "$root/.github/announce.jq" \
+  jq -R -s -f "$out/announce.jq" \
     --arg mode "$mode" --arg chat_id -100123 --arg tag "$tag" \
     --arg version "${tag#v}" --arg minor "$(cut -d. -f1,2 <<< "${tag#v}")" \
     --arg subject "$(cat "$out/subject.txt")" \

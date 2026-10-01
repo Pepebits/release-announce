@@ -158,12 +158,12 @@ to curl over stdin, so it never shows up in a process list or an error message.
 
 Pin the major version, `@v1`. It moves with every compatible release; a patch
 or minor release never renames an input. Pin a full tag (`@v1.0.0`) or a
-commit sha to freeze it. The jq program that builds the message is fetched at
-the same commit as the workflow, so a pin covers both.
+commit sha to freeze it. The workflow is self-contained (the jq program that
+builds the message is inlined in it), so a pin covers everything that runs.
 
 ## Development
 
-`test/run.sh` builds the message from the fixtures in `test/fixtures/` (the
-notes of share-stories v2.0.0 and search-builder's changelog) and asserts on
-the JSON; it needs only `jq` 1.7. CI runs it, and lints the workflows with
+`test/run.sh` extracts the jq program from `announce.yml`, builds the message
+from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0 and
+search-builder's changelog) and asserts on the JSON; it needs only `jq` 1.7. CI runs it, and lints the workflows with
 actionlint.

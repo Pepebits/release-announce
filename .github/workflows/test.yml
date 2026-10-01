@@ -35,10 +35,6 @@ jobs:
 
       # Pinned, so a new lint rule cannot turn an unrelated change red. The
       # image bundles shellcheck, which also reads the `run:` scripts.
-      # github.job_workflow_sha is documented but missing from actionlint's
-      # list of context properties, hence the -ignore.
       - name: Lint the workflows
         run: |
-          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 \
-            -color -ignore 'property "job_workflow_sha" is not defined'
-
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
