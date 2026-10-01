@@ -1,0 +1,21 @@
+Telegram on teleproto, the maintained GramJS fork
+
+Upgrade note: the Telegram client moves from GramJS, now archived, to
+teleproto, its maintained fork. Nothing needs changing to upgrade: the same
+session, .env and data volume keep working, and the session file is not
+rewritten, so rolling back to 1.1.0 stays possible. Verified in production
+with a real story published end to end.
+
+Features
+- Releases are announced on Telegram as a rich message once the image is
+  published.
+- Logging in asks for a login email and its code when Telegram requires one,
+  instead of failing.
+
+Fixes
+- A revoked or expired Telegram session stops the bridge at once with a
+  "run pnpm run login" message, instead of being retried as a network
+  problem.
+- brace-expansion raised to 5.0.12 for GHSA-q2hr-2g5m-vwhr (development only).
+- A media server test no longer fails 1 run in 64.
+
