@@ -9,7 +9,8 @@ and it posts one tidy message per release.
 
 Top to bottom:
 
-1. The banner image, when the repository has one at the tag.
+1. The banner image: `banner_url` if set, otherwise the repository's own
+   banner when it has one at the tag.
 2. A title, "🚀 *project* **1.2.3**", and under it either the tag's subject
    line in italics ("✨ …") or, for changelog notes, the release date.
 3. The notes. Each titled list ("Fixes", or `### Fixed` in a changelog) is
@@ -102,6 +103,32 @@ The changelog is read at the tag. The workflow takes the section headed
 `## `, in [Keep a Changelog](https://keepachangelog.com/) form. If there is
 none it warns and announces without notes.
 
+### An external banner
+
+For repositories without a banner of their own, point `banner_url` at an
+image service, such as a generated social card:
+
+```yaml
+    with:
+      tag: ${{ github.ref_name }}
+      banner_url: https://opensoutheners.com/gh_card/{repo}
+```
+
+`{repo}` becomes the repository's name (`laravel-apiable` in
+`open-southeners/laravel-apiable`), so the same value fits every repository.
+To set it once, keep it as an organization (or repository) variable and pass
+it on; an empty or missing variable falls back to `banner_path`:
+
+```yaml
+      banner_url: ${{ vars.ANNOUNCE_BANNER_URL }}
+```
+
+Telegram downloads the image itself when the message is sent, so the URL must
+be public and answer with an image (`image/png`, `image/jpeg`…), and it keeps
+its own copy: a card that changes later does not change old posts. A URL
+Telegram cannot fetch fails the send, which, like any send failure, is a
+warning and not a failed release.
+
 ### Inputs
 
 | Input | Default | |
@@ -114,7 +141,8 @@ none it warns and announces without notes.
 | `install_command` | empty | `{version}` and `{tag}` are replaced. Empty omits the install section. |
 | `install_language` | `bash` | Highlighting for the command. |
 | `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}`. In the url, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
-| `banner_path` | `docs/banner.png` | Used only if it exists at the tag; linked at the tag via raw.githubusercontent.com. |
+| `banner_path` | `docs/banner.png` | Used only if it exists at the tag and `banner_url` is empty; linked at the tag via raw.githubusercontent.com. |
+| `banner_url` | empty | An image at a fixed `https://` URL, used instead of `banner_path`. `{repo}`, `{owner}`, `{version}`, `{minor}` and `{tag}` are replaced. See [An external banner](#an-external-banner). |
 | `footer` | empty | `{version}`, `{minor}` and `{tag}` are replaced. |
 | `chat` | `announcements` | `announcements` or `test`. |
 | `dry_run` | `false` | Print the message, send nothing. |
