@@ -133,7 +133,7 @@ warning and not a failed release.
 
 | Input | Default | |
 |---|---|---|
-| `tag` | required | The release tag, `vX.Y.Z`. |
+| `tag` | required | The release tag, `vX.Y.Z` or `X.Y.Z`. `{version}` is the tag without a leading `v`. |
 | `project_name` | the repository name | Shown in the title. |
 | `notes_source` | `tag` | `tag` (the annotated tag's message) or `changelog`. |
 | `changelog_path` | `CHANGELOG.md` | Only for `changelog`. |
