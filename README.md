@@ -57,6 +57,10 @@ The tag has to be annotated for there to be notes: `git tag -a v1.2.3`, with a
 subject line, a blank line, then paragraphs and `- ` lists. A lightweight tag
 is announced without notes.
 
+Tags without the `v` (`1.2.3`) work too; `{version}` is the same either way.
+The `if:` above only matches `v` tags, so a repository tagging `1.2.3` checks
+for `refs/tags/` instead, or triggers the workflow on its own tag pattern.
+
 ### An npm package, notes from CHANGELOG.md
 
 A tag does not mean an npm version is installable when publishing waits for a
