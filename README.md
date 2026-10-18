@@ -107,6 +107,45 @@ The changelog is read at the tag. The workflow takes the section headed
 `## `, in [Keep a Changelog](https://keepachangelog.com/) form. If there is
 none it warns and announces without notes.
 
+### A monorepo, one announcement per package
+
+A repository that releases several packages tags each with its own prefix,
+say `my-lib-v1.2.3` for the npm package and `my-lib-php-v1.2.3` for the PHP
+one, and keeps a changelog per package. Call the workflow once per package,
+with `tag_prefix` saying what comes before the version:
+
+```yaml
+# .github/workflows/publish.yml, triggered by both tag patterns
+  announce-php:
+    needs: php
+    if: startsWith(github.ref_name, 'my-lib-php-v')
+    permissions:
+      contents: read
+    uses: Pepebits/release-announce/.github/workflows/announce.yml@v1
+    with:
+      tag: ${{ github.ref_name }}
+      tag_prefix: my-lib-php-
+      project_name: my-lib-php
+      notes_source: changelog
+      changelog_path: packages/php/CHANGELOG.md
+      install_title: 🐘 Composer
+      install_command: composer require acme/my-lib:^{version}
+      buttons: >-
+        [{"text": "📝 Changelog", "url": "{repo_url}/blob/{tag}/packages/php/CHANGELOG.md"},
+         {"text": "📦 Packagist", "url": "https://packagist.org/packages/acme/my-lib#v{version}"}]
+    secrets: inherit
+```
+
+`{version}` and `{minor}` come from what follows the prefix (`1.2.3`, with or
+without its `v`), while `{tag}` stays the whole tag, so release and changelog
+links still point at the right one. A tag that does not start with the prefix
+is rejected, so a PHP tag can never be announced as the npm package. The
+npm side is the same with `tag_prefix: my-lib-` and its own changelog, but it
+is run by hand if its publishing waits for an approval, as in the previous
+example. Each package can also have its own `banner_path` or `banner_url`.
+
+Without `tag_prefix` nothing changes: the tag must be `vX.Y.Z` or `X.Y.Z`.
+
 ### An external banner
 
 For repositories without a banner of their own, point `banner_url` at an
@@ -137,7 +176,8 @@ warning and not a failed release.
 
 | Input | Default | |
 |---|---|---|
-| `tag` | required | The release tag, `vX.Y.Z` or `X.Y.Z`. `{version}` is the tag without a leading `v`. |
+| `tag` | required | The release tag, `vX.Y.Z` or `X.Y.Z`, after `tag_prefix` if one is set. `{version}` is the version without a leading `v`. |
+| `tag_prefix` | empty | What comes before the version in a monorepo tag, e.g. `my-lib-php-` for `my-lib-php-v1.2.3`. See [A monorepo](#a-monorepo-one-announcement-per-package). |
 | `project_name` | the repository name | Shown in the title. |
 | `notes_source` | `tag` | `tag` (the annotated tag's message) or `changelog`. |
 | `changelog_path` | `CHANGELOG.md` | Only for `changelog`. |
@@ -197,5 +237,7 @@ builds the message is inlined in it), so a pin covers everything that runs.
 
 `test/run.sh` extracts the jq program from `announce.yml`, builds the message
 from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0 and
-search-builder's changelog) and asserts on the JSON; it needs only `jq` 1.7. CI runs it, and lints the workflows with
-actionlint.
+search-builder's changelog) and asserts on the JSON. It also runs the
+workflow's input check against valid and invalid tags, with and without a
+`tag_prefix`. It needs only `jq` 1.7 and bash. CI runs it, and lints the
+workflows with actionlint.
