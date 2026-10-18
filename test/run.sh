@@ -13,11 +13,13 @@ sed -n "/<<'JQ'/,/^ *JQ\$/p" "$root/.github/workflows/announce.yml" | sed '1d;$d
 [ -s "$out/announce.jq" ] || { echo "could not find the jq program in announce.yml"; exit 1; }
 
 # build <mode> <notes file> <name> <tag> [extra jq args…] > $out/<name>.json
+# VERSION overrides the version taken from the tag, for prefixed tags.
 build() {
   local mode="$1" notes="$2" name="$3" tag="$4"; shift 4
+  local version="${VERSION:-${tag#v}}"
   jq -R -s -f "$out/announce.jq" \
     --arg mode "$mode" --arg chat_id -100123 --arg tag "$tag" \
-    --arg version "${tag#v}" --arg minor "$(cut -d. -f1,2 <<< "${tag#v}")" \
+    --arg version "$version" --arg minor "$(cut -d. -f1,2 <<< "$version")" \
     --arg subject "$(cat "$out/subject.txt")" \
     --arg repo_url https://github.com/Pepebits/demo \
     --arg project_name demo "$@" < "$notes" > "$out/$name.json"
@@ -126,6 +128,38 @@ build changelog "$out/big.md" big v3.0.0 \
   --arg install_title x --arg install_command "" --arg install_language bash \
   --argjson buttons '[]' --arg banner_url "" --arg footer ""
 check big 'a runaway changelog is cut under the limit' '[tostring | length] | .[0] < 32768'
+
+# --- monorepo tag: prefix, then the version ---------------------------------
+VERSION=0.2.0 build changelog "$root/test/fixtures/CHANGELOG.md" mono demo-php-v0.2.0 \
+  --arg install_title x --arg install_command "composer require pepebits/demo:^{version}" --arg install_language bash \
+  --argjson buttons '[{"text":"n","url":"{repo_url}/releases/tag/{tag}"}]' --arg banner_url "" --arg footer ""
+check mono 'version is what follows the prefix' '.rich_message.blocks[0].text == ["🚀 demo ", {type:"bold", text:"0.2.0"}] and .rich_message.blocks[2].text == ["📅 ", {type:"italic", text:"2026-09-17"}]'
+check mono '{tag} keeps the prefix, {version} does not' '(.rich_message.blocks[] | select(.type == "buttons") | .buttons[0].url) == "https://github.com/Pepebits/demo/releases/tag/demo-php-v0.2.0" and (.rich_message.blocks[] | select(.type == "pre") | .text) == "composer require pepebits/demo:^0.2.0"'
+
+# --- the input check, run as the workflow's first step ------------------------
+sed -n '/- name: Check the inputs/,/^$/p' "$root/.github/workflows/announce.yml" | sed '1,2d' | sed 's/^          //' > "$out/check.sh"
+grep -q TAG_PREFIX "$out/check.sh" || { echo "could not find the input check in announce.yml"; exit 1; }
+# tag_check <expected: ok|rejected> <tag_prefix> <tag>
+tag_check() {
+  local got=rejected
+  if NOTES_SOURCE=tag CHAT=test BUTTONS='[]' BANNER_URL='' TAG_PREFIX="$2" TAG="$3" \
+       bash "$out/check.sh" > /dev/null 2>&1; then got=ok; fi
+  if [ "$got" = "$1" ]; then echo "ok   check: prefix '$2', tag '$3' $1"
+  else echo "FAIL check: prefix '$2', tag '$3' should be $1, was $got"; fails=$((fails + 1)); fi
+}
+tag_check ok       ''              v1.2.3
+tag_check ok       ''              1.2.3
+tag_check rejected ''              v1.2.3-rc.1
+tag_check rejected ''              flex-url-v1.2.3
+tag_check ok       flex-url-       flex-url-v3.1.0
+tag_check ok       flex-url-php-   flex-url-php-v3.1.0
+tag_check ok       flex-url-php-v  flex-url-php-v3.1.0
+tag_check rejected flex-url-       flex-url-php-v3.1.0
+tag_check rejected flex-url-php-   flex-url-v3.1.0
+tag_check rejected flex-url-       v3.1.0
+tag_check rejected 'flex*'         flex-url-v1.2.3
+tag_check rejected 'pkg.'          pkgx1.2.3
+tag_check rejected '$(id)'         '$(id)1.2.3'
 
 if [ "$fails" -gt 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "all checks passed"

@@ -16,9 +16,13 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: Release tag to announce, vX.Y.Z or X.Y.Z
+        description: Release tag to announce, vX.Y.Z or X.Y.Z, after tag_prefix if one is set
         type: string
         required: true
+      tag_prefix:
+        description: 'What comes before the version in a monorepo tag, e.g. "my-lib-php-" for my-lib-php-v1.2.3. Empty for plain tags.'
+        type: string
+        default: ''
       project_name:
         description: Name shown in the title. Defaults to the repository name.
         type: string
@@ -88,6 +92,7 @@ jobs:
       # Inputs reach the scripts through the environment, never through ${{ }}
       # inside `run:` — a crafted tag name would otherwise be shell code.
       TAG: ${{ inputs.tag }}
+      TAG_PREFIX: ${{ inputs.tag_prefix }}
       PROJECT_NAME: ${{ inputs.project_name || github.event.repository.name }}
       NOTES_SOURCE: ${{ inputs.notes_source }}
       CHANGELOG_PATH: ${{ inputs.changelog_path }}
@@ -107,8 +112,15 @@ jobs:
     steps:
       - name: Check the inputs
         run: |
-          if ! [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::'$TAG' is not a release tag (vX.Y.Z or X.Y.Z)"
+          # A monorepo tags each package with its own prefix; the version is
+          # what follows it. The prefix is matched literally (quoted), and
+          # limited to what a tag name can hold, so it cannot widen the check.
+          if ! [[ "$TAG_PREFIX" =~ ^[A-Za-z0-9._/@-]*$ ]]; then
+            echo "::error::tag_prefix may only hold letters, digits and . _ / @ -"
+            exit 1
+          fi
+          if [[ "$TAG" != "$TAG_PREFIX"* ]] || ! [[ "${TAG#"$TAG_PREFIX"}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a release tag (${TAG_PREFIX}vX.Y.Z or ${TAG_PREFIX}X.Y.Z)"
             exit 1
           fi
           case "$NOTES_SOURCE" in tag | changelog) ;; *)
@@ -358,7 +370,8 @@ jobs:
             echo "send=true" >> "$GITHUB_OUTPUT"
           fi
 
-          version="${TAG#v}"
+          version="${TAG#"$TAG_PREFIX"}"
+          version="${version#v}"
           subject=""
           if [ "$NOTES_SOURCE" = changelog ]; then
             # Read at the tag, not from the checked-out branch: a manual run
