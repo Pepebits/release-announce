@@ -48,9 +48,13 @@ on:
         type: string
         default: '[{"text":"📝 Notes","url":"{repo_url}/releases/tag/{tag}"}]'
       banner_path:
-        description: Banner image in the repository, used only if it exists at the tag
+        description: Banner image in the repository, used only if it exists at the tag and banner_url is empty
         type: string
         default: docs/banner.png
+      banner_url:
+        description: 'Banner image at a fixed https URL, used instead of banner_path; {repo}, {owner}, {version}, {minor} and {tag} are replaced. Empty uses banner_path.'
+        type: string
+        default: ''
       footer:
         description: Closing line; {version}, {minor} and {tag} are replaced. Empty omits it.
         type: string
@@ -92,6 +96,7 @@ jobs:
       INSTALL_LANGUAGE: ${{ inputs.install_language }}
       BUTTONS: ${{ inputs.buttons }}
       BANNER_PATH: ${{ inputs.banner_path }}
+      BANNER_URL: ${{ inputs.banner_url }}
       FOOTER: ${{ inputs.footer }}
       CHAT: ${{ inputs.chat }}
       DRY_RUN: ${{ inputs.dry_run }}
@@ -116,6 +121,12 @@ jobs:
           esac
           if ! jq -e 'type == "array" and all(.[]; (.text | type == "string") and (.url | type == "string"))' <<< "$BUTTONS" > /dev/null; then
             echo "::error::buttons must be a JSON array of {text, url}"
+            exit 1
+          fi
+          # Telegram downloads the banner itself; anything but https is refused
+          # here rather than turning into a send failure after the release.
+          if [ -n "$BANNER_URL" ] && ! [[ "$BANNER_URL" =~ ^https://[^[:space:]]+$ ]]; then
+            echo "::error::banner_url must be an https:// URL"
             exit 1
           fi
 
@@ -365,10 +376,22 @@ jobs:
             git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > "$RUNNER_TEMP/notes.txt"
           fi
 
-          # Telegram fetches the banner itself, so it is linked at the tag
-          # rather than at main: a later redesign must not change an old post.
+          # An external banner (a generated social card, say) wins over the
+          # repository's. Its placeholders are filled here, in bash, so the
+          # same value works as one organization variable for every repository.
+          # Otherwise Telegram fetches the repository's banner, linked at the
+          # tag rather than at main: a later redesign must not change an old
+          # post. Telegram keeps its own copy once sent, so an external image
+          # changing later does not touch old posts either.
           banner_url=""
-          if git cat-file -e "refs/tags/$TAG:$BANNER_PATH" 2>/dev/null; then
+          if [ -n "$BANNER_URL" ]; then
+            banner_url="$BANNER_URL"
+            banner_url="${banner_url//\{repo\}/${GITHUB_REPOSITORY#*/}}"
+            banner_url="${banner_url//\{owner\}/${GITHUB_REPOSITORY%%/*}}"
+            banner_url="${banner_url//\{version\}/$version}"
+            banner_url="${banner_url//\{minor\}/$(cut -d. -f1,2 <<< "$version")}"
+            banner_url="${banner_url//\{tag\}/$TAG}"
+          elif git cat-file -e "refs/tags/$TAG:$BANNER_PATH" 2>/dev/null; then
             banner_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/$BANNER_PATH"
           fi
 
