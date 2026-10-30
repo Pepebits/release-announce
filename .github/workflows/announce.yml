@@ -169,9 +169,9 @@ jobs:
           #
           # The notes travel as plain JSON strings inside explicit blocks, never as
           # Markdown or HTML, so nothing in them can be parsed as formatting or markup
-          # and there is nothing to escape. The one exception is `code` spans and
-          # [links](https://…), which become typed RichText pieces: still structured
-          # data, still no parse mode.
+          # and there is nothing to escape. The one exception is `code` spans,
+          # [links](https://…) and **bold**, which become typed RichText pieces: still
+          # structured data, still no parse mode.
 
           # {version}, {minor}, {tag} and {repo_url} in a caller-supplied string.
           def subst:
@@ -180,21 +180,61 @@ jobs:
             | gsub("\\{tag\\}"; $tag)
             | gsub("\\{repo_url\\}"; $repo_url);
 
-          # Splits a line of notes into RichText: `code` and [text](url) become typed
-          # pieces, the rest stays plain. A line with neither stays a bare string.
+          # Splits a line of notes into RichText, reading the inline Markdown that
+          # changelogs use: `code`, [text](https://…), <https://…>, bare https:// URLs,
+          # **bold** or __bold__, *italic* or _italic_, ~~strikethrough~~, and \-escaped
+          # punctuation, which stays literal. The rest stays plain, and a line with none
+          # of it stays a bare string. Italic and __bold__ follow CommonMark's rule: no
+          # space just inside the marks and no word character just outside, so 2 * 3,
+          # *.js and snake_case stay literal. Styles nest (bold may hold italic or a
+          # link), but code cannot sit inside them in Telegram, so a code span within
+          # the marks is left beside the styled pieces around it.
           def rich:
+            def styled($style):
+              rich
+              | if type == "array" and any(.[]; type == "object" and .type == "code") then
+                  .[] | if type == "object" and .type == "code" then .
+                        else {type: $style, text: .} end
+                else {type: $style, text: .} end;
+            # Adjacent plain pieces (an escape and the text around it) become one.
+            def merged:
+              reduce .[] as $p ([];
+                if ($p | type) == "string" and (.[-1] | type) == "string"
+                then .[:-1] + [.[-1] + $p] else . + [$p] end)
+              | if length == 1 and (.[0] | type) == "string" then .[0] else . end;
             . as $s
-            | [match("`([^`]+)`|\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)"; "g")] as $m
+            | [match(
+                "\\\\(?<esc>[!-/:-@\\[-`{-~])"
+                + "|`(?<code>[^`]+)`"
+                + "|\\[(?<link_text>[^\\]]+)\\]\\((?<link_url>https?://[^)\\s]+)\\)"
+                + "|<(?<autolink>https?://[^>\\s]+)>"
+                + "|\\*\\*(?<bold>(?=\\S).+?(?<=\\S))\\*\\*"
+                + "|(?<![\\w_])__(?<bold_>(?=\\S).+?(?<=\\S))__(?![\\w_])"
+                + "|~~(?<strike>(?=\\S).+?(?<=\\S))~~"
+                + "|(?<![\\w*])\\*(?<italic>[^\\s*](?:[^*]*[^\\s*])?)\\*(?![\\w*])"
+                + "|(?<![\\w_])_(?<italic_>[^\\s_](?:[^_]*[^\\s_])?)_(?![\\w_])"
+                + "|(?<![\\w/])(?<bare>https?://[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])";
+                "g")] as $m
             | if ($m | length) == 0 then $s
               else
                 reduce $m[] as $x ({pos: 0, out: []};
-                  .out += (if $x.offset > .pos then [$s[.pos:$x.offset]] else [] end)
-                  | .out += [if $x.captures[0].string != null
-                             then {type: "code", text: $x.captures[0].string}
-                             else {type: "url", text: $x.captures[1].string,
-                                   url: $x.captures[2].string} end]
+                  (reduce $x.captures[] as $g ({};
+                     if $g.name != null and $g.string != null then .[$g.name] = $g.string
+                     else . end)) as $c
+                  | .out += (if $x.offset > .pos then [$s[.pos:$x.offset]] else [] end)
+                  | .out += (if $c.esc then [$c.esc]
+                             elif $c.code then [{type: "code", text: $c.code}]
+                             elif $c.link_url then [{type: "url", text: $c.link_text, url: $c.link_url}]
+                             elif $c.autolink then [{type: "url", text: $c.autolink, url: $c.autolink}]
+                             elif $c.bare then [{type: "url", text: $c.bare, url: $c.bare}]
+                             elif $c.bold then [$c.bold | styled("bold")]
+                             elif $c.bold_ then [$c.bold_ | styled("bold")]
+                             elif $c.strike then [$c.strike | styled("strikethrough")]
+                             elif $c.italic then [$c.italic | styled("italic")]
+                             else [$c.italic_ | styled("italic")] end)
                   | .pos = $x.offset + $x.length)
                 | .out + (if .pos < ($s | length) then [$s[.pos:]] else [] end)
+                | merged
               end;
 
           def para: {type: "paragraph", text: rich};
@@ -231,23 +271,48 @@ jobs:
                            text: (($m.rest[0:1] | ascii_upcase) + $m.rest[1:] | rich)}]}
             else para end;
 
-          # "- " lines (with their wrapped continuations) as one bulleted list block.
+          # A list item line: "- ", "* " or "+ ", or "1. " / "1) " for a numbered one,
+          # indented to nest under the item above.
+          def item_re: "^(?<indent>\\s*)(?:[-*+]|(?<number>\\d+)[.)])\\s+(?<text>.*)$";
+
+          # Items in order, each {indent, number, lines}, as a tree: an item owns the
+          # ones after it that are indented deeper, up to the next one that is not.
+          def nested:
+            if length == 0 then []
+            else
+              . as $a
+              | [range(length) | select($a[.].indent <= $a[0].indent)] as $starts
+              | [range($starts | length) as $k
+                 | $a[$starts[$k]]
+                   + {children: ($a[$starts[$k] + 1:($starts[$k + 1] // ($a | length))] | nested)}]
+            end;
+
+          # List lines (items with their wrapped continuations) as one list block,
+          # sub-items as lists inside their parent item, numbered items keeping their
+          # number.
           def list_block:
-            {type: "list",
-             items: (
-               reduce .[] as $l ([];
-                 if ($l | test("^- ")) then . + [[($l | sub("^- "; ""))]]
-                 else .[:-1] + [.[-1] + [$l]] end)
-               | map({blocks: [{type: "paragraph", text: (unwrap | rich)}]}))};
+            def block:
+              {type: "list",
+               items: map(
+                 {blocks: ([{type: "paragraph", text: (.lines | unwrap | rich)}]
+                           + (if (.children | length) == 0 then [] else [.children | block] end))}
+                 + (if .number == null then {}
+                    else (.number | tonumber) as $n | {label: "\($n).", value: $n, type: "1"} end))};
+            reduce .[] as $l ([];
+              ([$l | capture(item_re)] | first) as $item
+              | if $item != null then
+                  . + [{indent: ($item.indent | length), number: $item.number, lines: [$item.text]}]
+                else .[:-1] + [.[-1] | .lines += [$l]] end)
+            | nested | block;
 
           # One blank-line-separated chunk of the notes. A short title line followed by
-          # "- " items becomes a collapsed section, so a long list of fixes does not
+          # list items becomes a collapsed section, so a long list of fixes does not
           # bury the rest of the message; otherwise the lead lines are a paragraph (or a
           # heading, when it is a single short line with no full stop) and any items a
           # plain list.
           def chunk_blocks:
             split("\n") as $lines
-            | ([$lines | to_entries[] | select(.value | test("^- ")) | .key] | first) as $first
+            | ([$lines | to_entries[] | select(.value | test("^(?:[-*+]|\\d+[.)])\\s")) | .key] | first) as $first
             | (if $first == null then $lines else $lines[:$first] end) as $lead
             | (if $first == null then [] else $lines[$first:] end) as $rest
             | (($lead | length) == 1 and ($lead[0] | length) <= 40
