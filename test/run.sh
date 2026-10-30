@@ -115,12 +115,47 @@ build changelog "$root/test/fixtures/CHANGELOG.md" cl999 v9.9.9 \
 check cl999 'missing section: title and divider only' '[.rich_message.blocks[].type] == ["heading","divider"]'
 
 # --- inline markup, from a tag ----------------------------------------------
-printf 'Features\n- Run `pnpm login` or see [the docs](https://example.com/a_b) now.\n- *not bold*, <b>not html</b>, [not a link](javascript:alert(1)).\n' > "$out/inline.txt"
+printf 'Features\n- Run `pnpm login` or see [the docs](https://example.com/a_b) now.\n- 2 * 3 * 4, *.js, snake_case_name, <b>not html</b>, [not a link](javascript:alert(1)).\n- **Login**: asks for the code, **run `pnpm login`** first.\n- **see [the docs](https://example.com/d)**\n- The *New post* form, _also_ *with `code`*.\n' > "$out/inline.txt"
 build tag "$out/inline.txt" inline v1.2.3 \
   --arg install_title x --arg install_command "" --arg install_language bash \
   --argjson buttons '[]' --arg banner_url "" --arg footer ""
 check inline 'code and url pieces' '.rich_message.blocks[3].blocks[0].items[0].blocks[0].text == ["Run ", {type:"code", text:"pnpm login"}, " or see ", {type:"url", text:"the docs", url:"https://example.com/a_b"}, " now."]'
-check inline 'everything else stays literal' '.rich_message.blocks[3].blocks[0].items[1].blocks[0].text == "*not bold*, <b>not html</b>, [not a link](javascript:alert(1))."'
+check inline 'bold pieces, code kept out of bold' '.rich_message.blocks[3].blocks[0].items[2].blocks[0].text == [{type:"bold", text:"Login"}, ": asks for the code, ", {type:"bold", text:"run "}, {type:"code", text:"pnpm login"}, " first."]'
+check inline 'a link may sit inside bold' '.rich_message.blocks[3].blocks[0].items[3].blocks[0].text == [{type:"bold", text:["see ", {type:"url", text:"the docs", url:"https://example.com/d"}]}]'
+check inline 'italic pieces, code kept out of italic' '.rich_message.blocks[3].blocks[0].items[4].blocks[0].text == ["The ", {type:"italic", text:"New post"}, " form, ", {type:"italic", text:"also"}, " ", {type:"italic", text:"with "}, {type:"code", text:"code"}, "."]'
+check inline 'everything else stays literal' '.rich_message.blocks[3].blocks[0].items[1].blocks[0].text == "2 * 3 * 4, *.js, snake_case_name, <b>not html</b>, [not a link](javascript:alert(1))."'
+
+# --- the rest of the inline Markdown changelogs use --------------------------
+printf 'Features\n- **bold with *italic* inside**, __bold__, ~~gone~~ and \\*not italic\\*\n- See <https://example.com/a> or https://example.com/a_b. Done\n' > "$out/inline2.txt"
+build tag "$out/inline2.txt" inline2 v1.2.3 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+check inline2 'styles nest, __bold__ and ~~strike~~, escapes stay literal' '.rich_message.blocks[3].blocks[0].items[0].blocks[0].text == [{type:"bold", text:["bold with ", {type:"italic", text:"italic"}, " inside"]}, ", ", {type:"bold", text:"bold"}, ", ", {type:"strikethrough", text:"gone"}, " and *not italic*"]'
+check inline2 'autolinks and bare URLs, trailing full stop left out' '.rich_message.blocks[3].blocks[0].items[1].blocks[0].text == ["See ", {type:"url", text:"https://example.com/a", url:"https://example.com/a"}, " or ", {type:"url", text:"https://example.com/a_b", url:"https://example.com/a_b"}, ". Done"]'
+
+# --- nested and numbered lists ----------------------------------------------
+printf 'Fixes\n- parent\n  - child\n    wrapped\n  * second child\n- after\n\nSteps\n1. first\n2) second\n' > "$out/lists.txt"
+build tag "$out/lists.txt" lists v1.2.3 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+check lists 'sub-items nest inside their parent' '.rich_message.blocks[3].blocks[0].items == [
+  {blocks:[{type:"paragraph", text:"parent"}, {type:"list", items:[
+    {blocks:[{type:"paragraph", text:"child wrapped"}]},
+    {blocks:[{type:"paragraph", text:"second child"}]}]}]},
+  {blocks:[{type:"paragraph", text:"after"}]}]'
+check lists 'numbered items keep their number' '.rich_message.blocks[4] | .summary.text == "📝 Steps" and .blocks[0].items == [
+  {blocks:[{type:"paragraph", text:"first"}], label:"1.", value:1, type:"1"},
+  {blocks:[{type:"paragraph", text:"second"}], label:"2.", value:2, type:"1"}]'
+
+# --- real changelogs that once showed their Markdown marks ------------------
+for fixture in ki:v1.1.0 ghost-connector:v0.1.5; do
+  build changelog "$root/test/fixtures/${fixture%%:*}-CHANGELOG.md" "${fixture%%:*}" "${fixture#*:}" \
+    --arg install_title x --arg install_command "" --arg install_language bash \
+    --argjson buttons '[]' --arg banner_url "" --arg footer ""
+  check "${fixture%%:*}" 'no Markdown marks left in the text' '[.. | strings] | all(test("\\*|__|~~") | not)'
+done
+check ki 'bold around code: code beside the bold' '.rich_message.blocks[3].blocks[0].items[0].blocks[0].text[0:3] == [{type:"code", text:"ki"}, {type:"bold", text:" for macOS and Windows"}, ": releases include "]'
+check ghost-connector 'single stars are italic' '[.. | objects | select(.type? == "italic") | .text] == ["2026-10-25", "New post", "Results", "Export CSV"]'
 
 # --- size cap ---------------------------------------------------------------
 { printf '## [3.0.0] - 2026-01-01\n\n### Fixed\n\n'; for i in $(seq 1 3000); do printf -- '- fix number %s with some padding words to make it longer\n' "$i"; done; } > "$out/big.md"

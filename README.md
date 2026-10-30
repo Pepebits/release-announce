@@ -23,9 +23,13 @@ Top to bottom:
    button), buttons, and an optional footer line.
 
 Notes are sent as structured blocks, never as Markdown or HTML, so nothing in
-a changelog can break the message. The only inline formatting is `code` spans
-and `[text](https://…)` links, which become real code and link pieces; all
-other punctuation stays literal.
+a changelog can break the message. The inline Markdown changelogs use is read
+into real formatting: `code` spans, `[text](https://…)` and `<https://…>` links,
+bare `https://` URLs, `**bold**` or `__bold__`, `*italic*` or `_italic_`, and
+`~~strikethrough~~`, nested as written. A `\*` escape, and any other
+punctuation such as `2 * 3` or `snake_case`, stays literal. Lists may use `-`,
+`*` or `+`, or be numbered (`1.`), and an indented item nests under the one
+above.
 
 ## Using it
 
