@@ -34,6 +34,8 @@ above.
 ## Using it
 
 Run it after the release is installable, and `needs:` whatever publishes it.
+`@v1` follows the latest 1.x release; what each one changed is in the
+[changelog](CHANGELOG.md), and a full tag such as `@v1.4.0` pins one.
 
 ### A Docker image, notes from the annotated tag
 
