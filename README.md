@@ -1,4 +1,4 @@
-# release-announce
+<p align="center"><img src="docs/banner.png" alt="release-announce" width="720"></p>
 
 A reusable GitHub Actions workflow that announces a release on Telegram as a
 [rich message](https://core.telegram.org/bots/api#rich-messages). Call it from
