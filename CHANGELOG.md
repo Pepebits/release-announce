@@ -7,7 +7,24 @@ get every 1.x release as soon as it is tagged.
 
 ## [Unreleased]
 
-## [1.4.1] - 2026-11-23
+## [1.5.0] - 2026-11-23
+
+### Added
+
+- Sections keep their structure: prose before or instead of a list, several
+  paragraphs and fenced code inside a list item, `####` sub-headings, `>`
+  quotes, Markdown tables and `- [x]` task checkboxes. An upgrade note of
+  several paragraphs folds whole, and a title followed by a blank line still
+  folds its list.
+- If Telegram refuses the message, it is sent again without the banner, then
+  as plain text with the buttons, instead of being lost.
+- `message_thread_id`, `disable_notification` and `protect_content` inputs,
+  for a forum topic, a silent post and a post that cannot be forwarded.
+- `fold` input: `auto` leaves a list of three items or fewer open, `never`
+  leaves every section open.
+- Buttons can copy text (`copy_text`), take a `style` (`primary`, `success`,
+  `danger`), and go in rows: they fill rows of up to 8, and a nested array is
+  a row of its own.
 
 ### Fixed
 
@@ -19,8 +36,8 @@ get every 1.x release as soon as it is tagged.
 - Lists stop nesting at the fifth level, keeping the message within
   Telegram's 16 levels; deeper items sit beside the fifth.
 - Numbered items no longer send `label`, a field Telegram only returns.
-- More than 8 buttons is refused when the workflow starts instead of failing
-  at send time.
+- Link definitions at the foot of a changelog (`[1.0.0]: https://…`) no
+  longer show up in the notes of its oldest version.
 
 ### Changed
 
@@ -80,8 +97,8 @@ get every 1.x release as soon as it is tagged.
 - The install command, buttons, banner and footer are inputs, with
   `{version}`, `{minor}`, `{tag}` and `{repo_url}` placeholders.
 
-[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.4.1...HEAD
-[1.4.1]: https://github.com/Pepebits/release-announce/compare/v1.4.0...v1.4.1
+[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/Pepebits/release-announce/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Pepebits/release-announce/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Pepebits/release-announce/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Pepebits/release-announce/compare/v1.1.0...v1.2.0
