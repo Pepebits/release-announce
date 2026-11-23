@@ -22,6 +22,7 @@ build() {
     --arg version "$version" --arg minor "$(cut -d. -f1,2 <<< "$version")" \
     --arg subject "$(cat "$out/subject.txt")" \
     --arg repo_url https://github.com/Pepebits/demo \
+    --arg notes_url "https://github.com/Pepebits/demo/releases/tag/$tag" \
     --arg project_name demo "$@" < "$notes" > "$out/$name.json"
 }
 
@@ -42,7 +43,21 @@ common() {
   check "$1" 'entities are not guessed' '.rich_message.skip_entity_detection == true'
   check "$1" 'chat id passed through' '.chat_id == "-100123"'
   check "$1" 'title heading comes first, no banner' '.rich_message.blocks[0] | .type == "heading" and .size == 1'
+  check "$1" 'at most 500 blocks, list items included' "$block_count"' <= 500'
+  check "$1" 'at most 16 levels of blocks and formatting' "$depth"' <= 16'
+  # Bot API 10.5 replaced text with blocks in expandable quotations; folded
+  # sections are details blocks, and stay so.
+  check "$1" 'no quotation holds bare text' '[.. | objects | select(.type? == "blockquote" or .type? == "expandable_blockquote") | select(has("text"))] | length == 0'
+  check "$1" 'every folded section has a summary and blocks' '[.. | objects | select(.type? == "details")] | all(has("summary") and (.blocks | type == "array" and length > 0))'
+  check "$1" 'list items carry only input fields' '[.. | objects | .items? | arrays | .[] | keys[]] | all(IN("blocks", "has_checkbox", "is_checked", "value", "type"))'
 }
+# Telegram's counting: blocks at any depth, plus list items.
+block_count='[.rich_message | .. | objects | (.blocks?, .items?) | arrays | .[]] | length'
+# Levels of nested blocks and rich text, counted generously: every object
+# inside another one, through blocks, items, text and summary.
+depth='def d: if type == "array" then (map(d) | max // 0)
+  elif type == "object" then 1 + ([.blocks?, .items?, .text?, .summary?] | map(select(type == "array" or type == "object") | d) | max // 0)
+  else 0 end; .rich_message.blocks | d'
 
 # --- annotated tag, share-stories v2.0.0 -----------------------------------
 # The fixture is %(contents): the subject, a blank line, then the body.
@@ -144,8 +159,19 @@ check lists 'sub-items nest inside their parent' '.rich_message.blocks[3].blocks
     {blocks:[{type:"paragraph", text:"second child"}]}]}]},
   {blocks:[{type:"paragraph", text:"after"}]}]'
 check lists 'numbered items keep their number' '.rich_message.blocks[4] | .summary.text == "📝 Steps" and .blocks[0].items == [
-  {blocks:[{type:"paragraph", text:"first"}], label:"1.", value:1, type:"1"},
-  {blocks:[{type:"paragraph", text:"second"}], label:"2.", value:2, type:"1"}]'
+  {blocks:[{type:"paragraph", text:"first"}], value:1, type:"1"},
+  {blocks:[{type:"paragraph", text:"second"}], value:2, type:"1"}]'
+
+# Ten levels of indentation: lists stop nesting at the fifth.
+{ printf 'Fixes\n'; for i in $(seq 0 9); do printf '%*s- level %s\n' $((i * 2)) '' "$i"; done; } > "$out/deep.txt"
+build tag "$out/deep.txt" deep v1.2.3 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common deep
+check deep 'five list levels, the rest beside the fifth, none lost' '
+  ([.. | objects | select(.type? == "paragraph") | .text | strings | select(startswith("level "))] | length == 10)
+  and ([.rich_message.blocks[3] | paths(objects and .type? == "list") | map(select(. == "items")) | length] | max == 4)
+  and ([.. | objects | select(.type? == "list") | select(.items | length == 6)] | length == 1)'
 
 # --- real changelogs that once showed their Markdown marks ------------------
 for fixture in ki:v1.1.0 ghost-connector:v0.1.5; do
@@ -162,7 +188,103 @@ check ghost-connector 'single stars are italic' '[.. | objects | select(.type? =
 build changelog "$out/big.md" big v3.0.0 \
   --arg install_title x --arg install_command "" --arg install_language bash \
   --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common big
 check big 'a runaway changelog is cut under the limit' '[tostring | length] | .[0] < 32768'
+check big 'cut at a whole item' '[.. | objects | select(.type? == "list") | .items[-1].blocks[0].text] | last | endswith("to make it longer")'
+check big 'ends with a link to the full notes' '.rich_message.blocks[-2] == {type:"paragraph", text:{type:"italic", text:["… ", {type:"url", text:"the full notes", url:"https://github.com/Pepebits/demo/releases/tag/v3.0.0"}]}}'
+check big 'keeps as much as the limits allow' "$block_count"' > 400'
+check cl 'short notes are not marked as cut' '[tostring | test("the full notes")] | .[0] | not'
+
+# A long list of long items reaches the character limit before the block one.
+{ printf '## [3.0.1] - 2026-01-01\n\n### Fixed\n\n'; for i in $(seq 1 600); do printf -- '- fix %s %s\n' "$i" "$(printf 'word%.0s ' $(seq 1 30))end"; done; } > "$out/wide.md"
+build changelog "$out/wide.md" wide v3.0.1 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common wide
+check wide 'cut at a whole item under the character limit' '([tostring | length] | .[0] <= 32000) and ([.. | objects | select(.type? == "list") | .items[-1].blocks[0].text] | last | endswith("end"))'
+
+# --- structure inside sections: a changelog using most of Markdown ---------
+build changelog "$root/test/fixtures/rich-CHANGELOG.md" rich v2.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common rich
+section() { echo ".rich_message.blocks[] | select(.type == \"details\" and (.summary.text | endswith(\"$1\"))) | .blocks"; }
+check rich 'intro, upgrade note, then each ### folded in order' '[.rich_message.blocks[] | .type + ":" + ((.summary.text // .text) | tostring)] == ["heading:[\"🚀 demo \",{\"type\":\"bold\",\"text\":\"2.0.0\"}]", "paragraph:\u00a0", "paragraph:[\"📅 \",{\"type\":\"italic\",\"text\":\"2026-11-20\"}]", "paragraph:A big one: the config format changed.", "details:⚠️ Upgrade note", "details:🔄 Changed", "details:🗑️ Removed", "details:🐛 Fixed", "details:🔒 Security", "divider:null"]'
+check rich 'prose before a list stays inside its section' "[$(section Changed)[].type] == [\"paragraph\", \"list\"]"
+check rich 'an item holds a paragraph, fenced code and another paragraph' "$(section Changed)[1].items[0].blocks == [
+  {type:\"paragraph\", text:\"Settings are read from TOML instead of JSON. Run the migration:\"},
+  {type:\"pre\", text:\"demo migrate --from ~/.demo.json\", language:\"bash\"},
+  {type:\"paragraph\", text:\"The old file is kept as a backup.\"}]"
+check rich 'a numbered sub-list inside an item' "$(section Changed)[1].items[1].blocks[1] == {type:\"list\", items:[{blocks:[{type:\"paragraph\", text:\"Old logs are gzipped.\"}], value:1, type:\"1\"}, {blocks:[{type:\"paragraph\", text:\"After 30 days they are removed.\"}], value:2, type:\"1\"}]}"
+check rich 'a section of prose alone is folded too' "$(section Removed) | length == 1 and .[0].type == \"paragraph\""
+check rich 'task checkboxes' "[$(section Fixed)[0].items[0:2][] | [.has_checkbox, .is_checked]] == [[true, true], [true, null]]"
+check rich '#### is a smaller heading inside the section' "$(section Fixed)[1] == {type:\"heading\", size:4, text:\"Windows\"}"
+check rich 'a > quote keeps its formatting' "$(section Security)[0] == {type:\"blockquote\", blocks:[{type:\"paragraph\", text:[\"Upgrade as soon as possible: CVE-2026-0001 allowed \", {type:\"bold\", text:\"remote\"}, \" code execution. Thanks to the reporter.\"]}]}"
+check rich 'a Markdown table is a table, header and alignment kept' "$(section Security)[1] == {type:\"table\", is_bordered:true, cells:[
+  [{text:\"Platform\", is_header:true, align:\"left\"}, {text:\"Status\", is_header:true, align:\"center\"}],
+  [{text:\"Linux\", align:\"left\"}, {text:\"✅\", align:\"center\"}],
+  [{text:\"macOS\", align:\"left\"}, {text:[\"✅ \", {type:\"code\", text:\"arm64\"}, \" too\"], align:\"center\"}]]}"
+check rich 'link definitions and comments are dropped' '[tostring | test("not shown|compare/v1")] | .[0] | not'
+check rich 'no Markdown marks or fences left in the text' '[.. | objects | select(.type? != "pre") | .text? | strings] | all(test("```|^#|^>|^\\|") | not)'
+
+# The same from a tag: a note of two paragraphs, a title then a blank line,
+# continuation paragraphs, and text back at the margin after a section.
+head -n 1 "$root/test/fixtures/tag-rich-notes.txt" > "$out/subject.txt"
+sed '1,2d' "$root/test/fixtures/tag-rich-notes.txt" > "$out/tag-rich-body.txt"
+build tag "$out/tag-rich-body.txt" tagrich v1.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common tagrich
+check tagrich 'block order' '[.rich_message.blocks[].type] == ["heading","paragraph","paragraph","details","details","details","paragraph","pre","divider"]'
+check tagrich 'the upgrade note folds both its paragraphs' '.rich_message.blocks[3] | .summary.text == "⚠️ Upgrade note" and ([.blocks[].text] == ["The database moves to Postgres 17.", "Back up before upgrading; the migration cannot be undone."])'
+check tagrich 'a title followed by a blank line still folds its list' '.rich_message.blocks[4] | .summary.text == "✨ Features" and .blocks[0].items[1].blocks[1].items[1].blocks == [{type:"paragraph", text:"JSON"}, {type:"paragraph", text:"Nested JSON is flattened."}]'
+check tagrich 'a paragraph indented under an item stays with it' '.rich_message.blocks[5].blocks[0].items[0].blocks == [{type:"paragraph", text:"Login no longer loops."}, {type:"paragraph", text:"A second paragraph explaining why it looped."}] and (.rich_message.blocks[5].blocks[0].items | length == 2)'
+check tagrich 'text back at the margin leaves the section' '.rich_message.blocks[6].text == "Thanks to everyone who reported bugs." and .rich_message.blocks[7] == {type:"pre", text:"make install"}'
+head -n 1 "$root/test/fixtures/tag-notes.txt" > "$out/subject.txt"
+
+# --- fold: always (default), auto, never --------------------------------------
+build tag "$out/tag-body.txt" fold_auto v2.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer "" --arg fold auto
+check fold_auto 'auto opens lists of three items or fewer, keeps the note folded' '[.rich_message.blocks[] | select(.type == "details") | .is_open] == [null, true, true]'
+check tag 'always folds every section' '[.rich_message.blocks[] | select(.type == "details") | .is_open] == [null, null, null]'
+build tag "$out/tag-body.txt" fold_never v2.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer "" --arg fold never
+check fold_never 'never opens them all' '[.rich_message.blocks[] | select(.type == "details") | .is_open] == [true, true, true]'
+
+# --- delivery options, buttons in rows, copy and style ------------------------
+nine='[{"text":"1","url":"https://e.com/{version}"},{"text":"2","url":"u"},{"text":"3","url":"u"},{"text":"4","url":"u"},{"text":"5","url":"u"},{"text":"6","url":"u"},{"text":"7","url":"u"},{"text":"8","url":"u"},{"text":"9","url":"u"},
+  [{"text":"📋 Copy","copy_text":"npm i demo@{version}","style":"primary"},{"text":"Docs","url":"https://e.com","style":"success"}]]'
+build tag "$out/tag-body.txt" opts v2.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons "$nine" --arg banner_url "" --arg footer "" \
+  --arg message_thread_id 42 --arg disable_notification true --arg protect_content true
+common opts
+check opts 'topic, silence and protection sent' '.message_thread_id == 42 and .disable_notification == true and .protect_content == true'
+check tag 'none of them unless asked' '[has("message_thread_id", "disable_notification", "protect_content")] == [false, false, false]'
+check opts 'buttons fill rows of 8, a nested array is its own row' '[.rich_message.blocks[] | select(.type == "buttons") | .buttons | length] == [8, 1, 2]'
+check opts 'copy and style buttons, placeholders replaced' '[.rich_message.blocks[] | select(.type == "buttons")][2].buttons == [{text:"📋 Copy", copy_text:{text:"npm i demo@2.0.0"}, style:"primary"}, {text:"Docs", url:"https://e.com", style:"success"}] and [.rich_message.blocks[] | select(.type == "buttons")][0].buttons[0].url == "https://e.com/2.0.0"'
+
+# --- the plain-text fallback --------------------------------------------------
+build tag "$out/tag-body.txt" plain v2.0.0 \
+  --arg install_title "🐳 Docker image" --arg install_command "docker pull demo:{version}" --arg install_language bash \
+  --argjson buttons "$nine" --arg banner_url https://example.com/b.png --arg footer "🏷️ {minor}" \
+  --arg message_thread_id 42 --arg output plain
+check plain 'plain text, no parse mode, no rich message' 'has("text") and (has("parse_mode") or has("rich_message") | not)'
+check plain 'title, subject, install, notes link and footer' '.text == "🚀 demo 2.0.0\n✨ Telegram on teleproto, the maintained GramJS fork\n\n🐳 Docker image\ndocker pull demo:2.0.0\n\n📝 https://github.com/Pepebits/demo/releases/tag/v2.0.0\n\n🏷️ 2.0"'
+check plain 'same chat and topic, no link preview' '.chat_id == "-100123" and .message_thread_id == 42 and .link_preview_options == {is_disabled: true}'
+check plain 'buttons as an inline keyboard in the same rows' '[.reply_markup.inline_keyboard[] | length] == [8, 1, 2] and .reply_markup.inline_keyboard[2][0] == {text:"📋 Copy", copy_text:{text:"npm i demo@2.0.0"}, style:"primary"}'
+build changelog "$root/test/fixtures/CHANGELOG.md" plaincl v0.2.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer "" --arg output plain
+check plaincl 'changelog: the date as subtitle, no keyboard' '.text == "🚀 demo 0.2.0\n📅 2026-09-17\n\n📝 https://github.com/Pepebits/demo/releases/tag/v0.2.0" and (has("reply_markup") | not)'
+
+# --- a changelog's last version: link definitions at the foot are not notes --
+build changelog "$root/CHANGELOG.md" own v1.0.0 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+check own 'no [x.y.z]: links from the foot of the file' '[tostring | test("\\[Unreleased\\]|compare/")] | .[0] | not'
 
 # --- monorepo tag: prefix, then the version ---------------------------------
 VERSION=0.2.0 build changelog "$root/test/fixtures/CHANGELOG.md" mono demo-php-v0.2.0 \
@@ -177,7 +299,7 @@ grep -q TAG_PREFIX "$out/check.sh" || { echo "could not find the input check in 
 # tag_check <expected: ok|rejected> <tag_prefix> <tag>
 tag_check() {
   local got=rejected
-  if NOTES_SOURCE=tag CHAT=test BUTTONS='[]' BANNER_URL='' TAG_PREFIX="$2" TAG="$3" \
+  if NOTES_SOURCE=tag CHAT=test BUTTONS='[]' BANNER_URL='' FOLD=always MESSAGE_THREAD_ID='' TAG_PREFIX="$2" TAG="$3" \
        bash "$out/check.sh" > /dev/null 2>&1; then got=ok; fi
   if [ "$got" = "$1" ]; then echo "ok   check: prefix '$2', tag '$3' $1"
   else echo "FAIL check: prefix '$2', tag '$3' should be $1, was $got"; fails=$((fails + 1)); fi
@@ -195,6 +317,74 @@ tag_check rejected flex-url-       v3.1.0
 tag_check rejected 'flex*'         flex-url-v1.2.3
 tag_check rejected 'pkg.'          pkgx1.2.3
 tag_check rejected '$(id)'         '$(id)1.2.3'
+
+# buttons_check <expected: ok|rejected> <buttons json>
+buttons_check() {
+  local got=rejected
+  if NOTES_SOURCE=tag CHAT=test BUTTONS="$2" BANNER_URL='' FOLD="${FOLD:-always}" MESSAGE_THREAD_ID="${MESSAGE_THREAD_ID:-}" TAG_PREFIX='' TAG=v1.2.3 \
+       bash "$out/check.sh" > /dev/null 2>&1; then got=ok; fi
+  if [ "$got" = "$1" ]; then echo "ok   check: ${3:-buttons $2} $1"
+  else echo "FAIL check: buttons $2 should be $1, was $got"; fails=$((fails + 1)); fi
+}
+button='{"text":"b","url":"https://example.com"}'
+buttons_check ok       "[$(printf "$button,%.0s" $(seq 1 8))$button]" '9 buttons, in rows'
+buttons_check ok       "[[$(printf "$button,%.0s" $(seq 1 7))$button]]" 'a row of 8'
+buttons_check rejected "[[$(printf "$button,%.0s" $(seq 1 8))$button]]" 'a row of 9'
+buttons_check rejected '[[]]' 'an empty row'
+buttons_check ok       '[{"text":"c","copy_text":"npm i x","style":"danger"}]'
+buttons_check rejected '[{"text":"c","url":"https://e.com","copy_text":"x"}]'
+buttons_check rejected '[{"text":"c"}]'
+buttons_check rejected '[{"text":"c","url":"https://e.com","style":"link"}]'
+buttons_check rejected '[{"text":"c","url":"https://e.com","callback_data":"x"}]'
+buttons_check rejected "[{\"text\":\"c\",\"copy_text\":\"$(printf 'x%.0s' $(seq 1 257))\"}]" 'copy_text over 256 characters'
+FOLD=auto buttons_check ok '[]' 'fold auto'
+FOLD=sometimes buttons_check rejected '[]' 'fold sometimes'
+MESSAGE_THREAD_ID=42 buttons_check ok '[]' 'message_thread_id 42'
+MESSAGE_THREAD_ID=4x buttons_check rejected '[]' 'message_thread_id 4x'
+
+# --- the send step, against a fake Telegram -----------------------------------
+# A stand-in curl answers like the Bot API: FAKE_TELEGRAM says what it refuses.
+sed -n '/- name: Send to Telegram/,$p' "$root/.github/workflows/announce.yml" | sed -n '/run: |/,$p' | sed '1d' | sed 's/^          //' > "$out/send.sh"
+grep -q sendMessage "$out/send.sh" || { echo "could not find the send step in announce.yml"; exit 1; }
+mkdir -p "$out/bin"
+cat > "$out/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+url="$(sed -n 's/^url = "\(.*\)"$/\1/p')"
+method="${url##*/}"
+while [ $# -gt 0 ]; do
+  case "$1" in --data-binary) data="${2#@}"; shift ;; --output) output="$2"; shift ;; esac
+  shift
+done
+echo "$method $(jq -c 'if .rich_message then [.rich_message.blocks[].type | select(. == "photo")] | length else "plain" end' "$data")" >> "$RUNNER_TEMP/calls"
+case "$FAKE_TELEGRAM:$method" in
+  down:*) echo '{"ok":false,"error_code":502,"description":"Bad Gateway"}' ;;
+  photo:sendRichMessage) if jq -e 'any(.rich_message.blocks[]; .type == "photo")' "$data" > /dev/null
+                         then echo '{"ok":false,"error_code":400,"description":"Bad Request: failed to get HTTP URL content"}'
+                         else echo '{"ok":true,"result":{"message_id":7}}'; fi ;;
+  rich:sendRichMessage | all:*) echo '{"ok":false,"error_code":400,"description":"Bad Request: can'"'"'t parse"}' ;;
+  *) echo '{"ok":true,"result":{"message_id":7}}' ;;
+esac > "$output"
+CURL
+chmod +x "$out/bin/curl"
+# send_case <name> <FAKE_TELEGRAM> <banner: yes|no> <expected exit> <expected calls> <expected log pattern>
+send_case() {
+  local tmp="$out/send-$1"; mkdir -p "$tmp"
+  if [ "$3" = yes ]; then jq '.rich_message.blocks = [{type:"photo", photo:{type:"photo", media:"https://e.com/b.png"}}] + .rich_message.blocks' "$out/tag.json" > "$tmp/message.json"
+  else cp "$out/tag.json" "$tmp/message.json"; fi
+  jq '.rich_message.blocks |= map(select(.type != "photo"))' "$tmp/message.json" > "$tmp/no-banner.json"
+  cp "$out/plain.json" "$tmp/fallback.json"
+  local code=0 log
+  log="$(PATH="$out/bin:$PATH" RUNNER_TEMP="$tmp" TELEGRAM_BOT_TOKEN=t FAKE_TELEGRAM="$2" bash "$out/send.sh" 2>&1)" || code=$?
+  local calls; calls="$(paste -sd, "$tmp/calls")"
+  if [ "$code" = "$4" ] && [ "$calls" = "$5" ] && grep -q -- "$6" <<< "$log"; then echo "ok   send: $1"
+  else echo "FAIL send: $1 (exit $code, calls $calls, log: $log)"; fails=$((fails + 1)); fi
+}
+send_case 'accepted at once'               ok    yes 0 'sendRichMessage 1'                                     'Sent as message 7'
+send_case 'banner refused: sent without'   photo yes 0 'sendRichMessage 1,sendRichMessage 0'                   'sent it without the banner'
+send_case 'rich refused: plain text'       rich  yes 0 'sendRichMessage 1,sendRichMessage 0,sendMessage "plain"' 'sent a plain-text one instead'
+send_case 'no banner to drop: plain text'  rich  no  0 'sendRichMessage 0,sendMessage "plain"'                 'sent a plain-text one instead'
+send_case 'outage: no retry, a warning'    down  yes 1 'sendRichMessage 1'                                     '::warning::Telegram announcement not sent: 502'
+send_case 'everything refused: a warning'  all   no  1 'sendRichMessage 0,sendMessage "plain"'                 'the plain-text one failed too'
 
 if [ "$fails" -gt 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "all checks passed"

@@ -1,0 +1,26 @@
+Postgres 17, faster search
+
+Upgrade note: the database moves to Postgres 17.
+
+Back up before upgrading; the migration cannot be undone.
+
+Features
+
+- Search is instant.
+- Exports:
+  - CSV
+  - JSON
+
+    Nested JSON is flattened.
+
+Fixes
+- Login no longer loops.
+
+  A second paragraph explaining why it looped.
+- Dark mode contrast.
+
+Thanks to everyone who reported bugs.
+
+```
+make install
+```

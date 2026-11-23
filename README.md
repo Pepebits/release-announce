@@ -13,12 +13,15 @@ Top to bottom:
    banner when it has one at the tag.
 2. A title, "🚀 *project* **1.2.3**", and under it either the tag's subject
    line in italics ("✨ …") or, for changelog notes, the release date.
-3. The notes. Each titled list ("Fixes", or `### Fixed` in a changelog) is
-   folded into a collapsed section with an emoji (✨ added or features, 🔄
-   changed, ⚠️ deprecated, upgrade or breaking notes, 🗑️ removed, 🐛 fixed,
-   🔒 security, 📦 dependencies, 📝 anything else), so a long list does not bury
-   the rest. An "Upgrade note:" or "Breaking note:" paragraph is folded the
-   same way under a ⚠️ title. Wrapped lines are joined back together.
+3. The notes. Each section ("Fixes" over a list, or `### Fixed` in a
+   changelog) is folded into a collapsed section with an emoji (✨ added or
+   features, 🔄 changed, ⚠️ deprecated, upgrade or breaking notes, 🗑️ removed,
+   🐛 fixed, 🔒 security, 📦 dependencies, 📝 anything else), so a long list
+   does not bury the rest; `fold` can leave short ones open. An "Upgrade
+   note:" or "Breaking note:" paragraph is folded the same way under a ⚠️
+   title, with the paragraphs after it. Wrapped lines are joined back
+   together. Notes too long for one message are cut at a whole item and end
+   with a link to the full notes.
 4. A divider, the install command in a code block (Telegram gives it a copy
    button), buttons, and an optional footer line.
 
@@ -29,7 +32,15 @@ bare `https://` URLs, `**bold**` or `__bold__`, `*italic*` or `_italic_`, and
 `~~strikethrough~~`, nested as written. A `\*` escape, and any other
 punctuation such as `2 * 3` or `snake_case`, stays literal. Lists may use `-`,
 `*` or `+`, or be numbered (`1.`), and an indented item nests under the one
-above.
+above, up to five levels deep.
+
+A section keeps its structure: prose before or instead of a list, several
+paragraphs and ```` ``` ```` fenced code inside an item, `####` sub-headings,
+`>` quotes, Markdown tables and `- [x]` task checkboxes all come through as
+the matching Telegram blocks. Link definitions (`[1.0.0]: https://…`) and
+`<!-- comments -->` are left out.
+
+The message needs Bot API 10.3 or later, which api.telegram.org runs.
 
 ## Using it
 
@@ -174,9 +185,7 @@ it on; an empty or missing variable falls back to `banner_path`:
 
 Telegram downloads the image itself when the message is sent, so the URL must
 be public and answer with an image (`image/png`, `image/jpeg`…), and it keeps
-its own copy: a card that changes later does not change old posts. A URL
-Telegram cannot fetch fails the send, which, like any send failure, is a
-warning and not a failed release.
+its own copy: a card that changes later does not change old posts.
 
 ### Inputs
 
@@ -190,10 +199,14 @@ warning and not a failed release.
 | `install_title` | `📦 Install` | Heading above the command. |
 | `install_command` | empty | `{version}` and `{tag}` are replaced. Empty omits the install section. |
 | `install_language` | `bash` | Highlighting for the command. |
-| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}`. In the url, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
+| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}` links or `{text, copy_text}` buttons that copy up to 256 characters, each with an optional `style`: `primary`, `success` or `danger`. They fill rows of up to 8; a nested array is a row of its own. In the url and copy_text, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
 | `banner_path` | `docs/banner.png` | Used only if it exists at the tag and `banner_url` is empty; linked at the tag via raw.githubusercontent.com. |
 | `banner_url` | empty | An image at a fixed `https://` URL, used instead of `banner_path`. `{repo}`, `{owner}`, `{version}`, `{minor}` and `{tag}` are replaced. See [An external banner](#an-external-banner). |
 | `footer` | empty | `{version}`, `{minor}` and `{tag}` are replaced. |
+| `fold` | `always` | `always` folds every section, `auto` leaves a list of three items or fewer open, `never` leaves them all open. |
+| `message_thread_id` | empty | The topic to post in, in a forum supergroup. |
+| `disable_notification` | `false` | Post without a notification sound. |
+| `protect_content` | `false` | Stop the message from being forwarded or saved. |
 | `chat` | `announcements` | `announcements` or `test`. |
 | `dry_run` | `false` | Print the message, send nothing. |
 
@@ -229,7 +242,10 @@ Give the caller a `workflow_dispatch` trigger as above and run it with
 
 The message is built before it is sent, so a failure there is a red run. Sending
 is deliberately forgiving: the release is already public by then, so a Telegram
-outage or a revoked bot is a warning, not a failed release. The bot token goes
+outage or a revoked bot is a warning, not a failed release. If Telegram refuses
+the message itself, it is sent again without the banner, then as plain text
+(title, install command, a link to the notes and the buttons), with a warning
+saying why. The bot token goes
 to curl over stdin, so it never shows up in a process list or an error message.
 
 ## Versioning
@@ -242,8 +258,11 @@ builds the message is inlined in it), so a pin covers everything that runs.
 ## Development
 
 `test/run.sh` extracts the jq program from `announce.yml`, builds the message
-from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0 and
-search-builder's changelog) and asserts on the JSON. It also runs the
+from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0,
+search-builder's changelog, and two that use most of Markdown) and asserts on the JSON. It also runs the
 workflow's input check against valid and invalid tags, with and without a
-`tag_prefix`. It needs only `jq` 1.7 and bash. CI runs it, and lints the
+`tag_prefix`, and checks every message against Telegram's limits: 500
+blocks, 16 levels of nesting, and the fields a list item may carry. It also
+runs the send step against a stand-in `curl`, to cover each fallback. It needs
+only `jq` 1.7 and bash. CI runs it, and lints the
 workflows with actionlint.
