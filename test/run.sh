@@ -22,6 +22,7 @@ build() {
     --arg version "$version" --arg minor "$(cut -d. -f1,2 <<< "$version")" \
     --arg subject "$(cat "$out/subject.txt")" \
     --arg repo_url https://github.com/Pepebits/demo \
+    --arg notes_url "https://github.com/Pepebits/demo/releases/tag/$tag" \
     --arg project_name demo "$@" < "$notes" > "$out/$name.json"
 }
 
@@ -42,7 +43,21 @@ common() {
   check "$1" 'entities are not guessed' '.rich_message.skip_entity_detection == true'
   check "$1" 'chat id passed through' '.chat_id == "-100123"'
   check "$1" 'title heading comes first, no banner' '.rich_message.blocks[0] | .type == "heading" and .size == 1'
+  check "$1" 'at most 500 blocks, list items included' "$block_count"' <= 500'
+  check "$1" 'at most 16 levels of blocks and formatting' "$depth"' <= 16'
+  # Bot API 10.5 replaced text with blocks in expandable quotations; folded
+  # sections are details blocks, and stay so.
+  check "$1" 'no quotation holds bare text' '[.. | objects | select(.type? == "blockquote" or .type? == "expandable_blockquote") | select(has("text"))] | length == 0'
+  check "$1" 'every folded section has a summary and blocks' '[.. | objects | select(.type? == "details")] | all(has("summary") and (.blocks | type == "array" and length > 0))'
+  check "$1" 'list items carry only input fields' '[.. | objects | .items? | arrays | .[] | keys[]] | all(IN("blocks", "has_checkbox", "is_checked", "value", "type"))'
 }
+# Telegram's counting: blocks at any depth, plus list items.
+block_count='[.rich_message | .. | objects | (.blocks?, .items?) | arrays | .[]] | length'
+# Levels of nested blocks and rich text, counted generously: every object
+# inside another one, through blocks, items, text and summary.
+depth='def d: if type == "array" then (map(d) | max // 0)
+  elif type == "object" then 1 + ([.blocks?, .items?, .text?, .summary?] | map(select(type == "array" or type == "object") | d) | max // 0)
+  else 0 end; .rich_message.blocks | d'
 
 # --- annotated tag, share-stories v2.0.0 -----------------------------------
 # The fixture is %(contents): the subject, a blank line, then the body.
@@ -144,8 +159,19 @@ check lists 'sub-items nest inside their parent' '.rich_message.blocks[3].blocks
     {blocks:[{type:"paragraph", text:"second child"}]}]}]},
   {blocks:[{type:"paragraph", text:"after"}]}]'
 check lists 'numbered items keep their number' '.rich_message.blocks[4] | .summary.text == "📝 Steps" and .blocks[0].items == [
-  {blocks:[{type:"paragraph", text:"first"}], label:"1.", value:1, type:"1"},
-  {blocks:[{type:"paragraph", text:"second"}], label:"2.", value:2, type:"1"}]'
+  {blocks:[{type:"paragraph", text:"first"}], value:1, type:"1"},
+  {blocks:[{type:"paragraph", text:"second"}], value:2, type:"1"}]'
+
+# Ten levels of indentation: lists stop nesting at the fifth.
+{ printf 'Fixes\n'; for i in $(seq 0 9); do printf '%*s- level %s\n' $((i * 2)) '' "$i"; done; } > "$out/deep.txt"
+build tag "$out/deep.txt" deep v1.2.3 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common deep
+check deep 'five list levels, the rest beside the fifth, none lost' '
+  ([.. | objects | select(.type? == "paragraph") | .text | strings | select(startswith("level "))] | length == 10)
+  and ([.rich_message.blocks[3] | paths(objects and .type? == "list") | map(select(. == "items")) | length] | max == 4)
+  and ([.. | objects | select(.type? == "list") | select(.items | length == 6)] | length == 1)'
 
 # --- real changelogs that once showed their Markdown marks ------------------
 for fixture in ki:v1.1.0 ghost-connector:v0.1.5; do
@@ -162,7 +188,20 @@ check ghost-connector 'single stars are italic' '[.. | objects | select(.type? =
 build changelog "$out/big.md" big v3.0.0 \
   --arg install_title x --arg install_command "" --arg install_language bash \
   --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common big
 check big 'a runaway changelog is cut under the limit' '[tostring | length] | .[0] < 32768'
+check big 'cut at a whole item' '[.. | objects | select(.type? == "list") | .items[-1].blocks[0].text] | last | endswith("to make it longer")'
+check big 'ends with a link to the full notes' '.rich_message.blocks[-2] == {type:"paragraph", text:{type:"italic", text:["… ", {type:"url", text:"the full notes", url:"https://github.com/Pepebits/demo/releases/tag/v3.0.0"}]}}'
+check big 'keeps as much as the limits allow' "$block_count"' > 400'
+check cl 'short notes are not marked as cut' '[tostring | test("the full notes")] | .[0] | not'
+
+# A long list of long items reaches the character limit before the block one.
+{ printf '## [3.0.1] - 2026-01-01\n\n### Fixed\n\n'; for i in $(seq 1 600); do printf -- '- fix %s %s\n' "$i" "$(printf 'word%.0s ' $(seq 1 30))end"; done; } > "$out/wide.md"
+build changelog "$out/wide.md" wide v3.0.1 \
+  --arg install_title x --arg install_command "" --arg install_language bash \
+  --argjson buttons '[]' --arg banner_url "" --arg footer ""
+common wide
+check wide 'cut at a whole item under the character limit' '([tostring | length] | .[0] <= 32000) and ([.. | objects | select(.type? == "list") | .items[-1].blocks[0].text] | last | endswith("end"))'
 
 # --- monorepo tag: prefix, then the version ---------------------------------
 VERSION=0.2.0 build changelog "$root/test/fixtures/CHANGELOG.md" mono demo-php-v0.2.0 \
@@ -195,6 +234,18 @@ tag_check rejected flex-url-       v3.1.0
 tag_check rejected 'flex*'         flex-url-v1.2.3
 tag_check rejected 'pkg.'          pkgx1.2.3
 tag_check rejected '$(id)'         '$(id)1.2.3'
+
+# buttons_check <expected: ok|rejected> <buttons json>
+buttons_check() {
+  local got=rejected
+  if NOTES_SOURCE=tag CHAT=test BUTTONS="$2" BANNER_URL='' TAG_PREFIX='' TAG=v1.2.3 \
+       bash "$out/check.sh" > /dev/null 2>&1; then got=ok; fi
+  if [ "$got" = "$1" ]; then echo "ok   check: $(jq length <<< "$2") button(s) $1"
+  else echo "FAIL check: buttons $2 should be $1, was $got"; fails=$((fails + 1)); fi
+}
+button='{"text":"b","url":"https://example.com"}'
+buttons_check ok       "[$(printf "$button,%.0s" $(seq 1 7))$button]"
+buttons_check rejected "[$(printf "$button,%.0s" $(seq 1 8))$button]"
 
 if [ "$fails" -gt 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "all checks passed"

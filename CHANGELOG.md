@@ -7,6 +7,27 @@ get every 1.x release as soon as it is tagged.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-23
+
+### Fixed
+
+- A long changelog is now cut under Telegram's limit of 500 blocks, which
+  counts every list item, and not only under its character limit: a few
+  hundred short items made Telegram refuse the whole announcement. The cut
+  falls at a whole item instead of mid-word, and the message ends with a link
+  to the full notes.
+- Lists stop nesting at the fifth level, keeping the message within
+  Telegram's 16 levels; deeper items sit beside the fifth.
+- Numbered items no longer send `label`, a field Telegram only returns.
+- More than 8 buttons is refused when the workflow starts instead of failing
+  at send time.
+
+### Changed
+
+- Checked against Bot API 10.5. Folded sections are `details` blocks, which
+  its change to expandable quotations does not touch, so nothing changes for
+  callers. The message needs Bot API 10.3 or later.
+
 ## [1.4.0] - 2026-10-30
 
 ### Added
@@ -59,7 +80,8 @@ get every 1.x release as soon as it is tagged.
 - The install command, buttons, banner and footer are inputs, with
   `{version}`, `{minor}`, `{tag}` and `{repo_url}` placeholders.
 
-[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/Pepebits/release-announce/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Pepebits/release-announce/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Pepebits/release-announce/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Pepebits/release-announce/compare/v1.1.0...v1.2.0

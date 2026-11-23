@@ -18,7 +18,9 @@ Top to bottom:
    changed, ⚠️ deprecated, upgrade or breaking notes, 🗑️ removed, 🐛 fixed,
    🔒 security, 📦 dependencies, 📝 anything else), so a long list does not bury
    the rest. An "Upgrade note:" or "Breaking note:" paragraph is folded the
-   same way under a ⚠️ title. Wrapped lines are joined back together.
+   same way under a ⚠️ title. Wrapped lines are joined back together. Notes
+   too long for one message are cut at a whole item and end with a link to
+   the full notes.
 4. A divider, the install command in a code block (Telegram gives it a copy
    button), buttons, and an optional footer line.
 
@@ -29,7 +31,9 @@ bare `https://` URLs, `**bold**` or `__bold__`, `*italic*` or `_italic_`, and
 `~~strikethrough~~`, nested as written. A `\*` escape, and any other
 punctuation such as `2 * 3` or `snake_case`, stays literal. Lists may use `-`,
 `*` or `+`, or be numbered (`1.`), and an indented item nests under the one
-above.
+above, up to five levels deep.
+
+The message needs Bot API 10.3 or later, which api.telegram.org runs.
 
 ## Using it
 
@@ -190,7 +194,7 @@ warning and not a failed release.
 | `install_title` | `📦 Install` | Heading above the command. |
 | `install_command` | empty | `{version}` and `{tag}` are replaced. Empty omits the install section. |
 | `install_language` | `bash` | Highlighting for the command. |
-| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}`. In the url, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
+| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of up to 8 `{text, url}`. In the url, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
 | `banner_path` | `docs/banner.png` | Used only if it exists at the tag and `banner_url` is empty; linked at the tag via raw.githubusercontent.com. |
 | `banner_url` | empty | An image at a fixed `https://` URL, used instead of `banner_path`. `{repo}`, `{owner}`, `{version}`, `{minor}` and `{tag}` are replaced. See [An external banner](#an-external-banner). |
 | `footer` | empty | `{version}`, `{minor}` and `{tag}` are replaced. |
@@ -245,5 +249,7 @@ builds the message is inlined in it), so a pin covers everything that runs.
 from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0 and
 search-builder's changelog) and asserts on the JSON. It also runs the
 workflow's input check against valid and invalid tags, with and without a
-`tag_prefix`. It needs only `jq` 1.7 and bash. CI runs it, and lints the
+`tag_prefix`, and checks every message against Telegram's limits: 500
+blocks, 16 levels of nesting, and the fields a list item may carry. It needs
+only `jq` 1.7 and bash. CI runs it, and lints the
 workflows with actionlint.

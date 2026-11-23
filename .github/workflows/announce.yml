@@ -131,8 +131,9 @@ jobs:
             echo "::error::chat must be 'announcements' or 'test', not '$CHAT'"
             exit 1 ;;
           esac
-          if ! jq -e 'type == "array" and all(.[]; (.text | type == "string") and (.url | type == "string"))' <<< "$BUTTONS" > /dev/null; then
-            echo "::error::buttons must be a JSON array of {text, url}"
+          # Telegram takes 1-8 buttons in a row; more would only fail at send time.
+          if ! jq -e 'type == "array" and length <= 8 and all(.[]; (.text | type == "string") and (.url | type == "string"))' <<< "$BUTTONS" > /dev/null; then
+            echo "::error::buttons must be a JSON array of at most 8 {text, url}"
             exit 1
           fi
           # Telegram downloads the banner itself; anything but https is refused
@@ -166,6 +167,11 @@ jobs:
           #            --arg project_name --arg install_title --arg install_command
           #            --arg install_language --argjson buttons (array of {text, url})
           #            --arg banner_url (empty: no banner) --arg footer (empty: none)
+          #            --arg notes_url (where the full notes are, linked when they are cut)
+          #
+          # Needs Bot API 10.3 or later: blocks came in 10.2, the buttons block in 10.3.
+          # Folded sections are `details` blocks, which the 10.5 change to expandable
+          # quotations (text replaced by blocks) does not touch.
           #
           # The notes travel as plain JSON strings inside explicit blocks, never as
           # Markdown or HTML, so nothing in them can be parsed as formatting or markup
@@ -277,14 +283,18 @@ jobs:
 
           # Items in order, each {indent, number, lines}, as a tree: an item owns the
           # ones after it that are indented deeper, up to the next one that is not.
-          def nested:
+          # Telegram allows 16 levels of nested blocks and formatting, and each list
+          # level takes two (the list and its item) inside a folded section, so lists
+          # stop nesting at the fifth level: anything deeper sits beside it.
+          def nested($level):
             if length == 0 then []
+            elif $level >= 5 then map(. + {children: []})
             else
               . as $a
               | [range(length) | select($a[.].indent <= $a[0].indent)] as $starts
               | [range($starts | length) as $k
                  | $a[$starts[$k]]
-                   + {children: ($a[$starts[$k] + 1:($starts[$k + 1] // ($a | length))] | nested)}]
+                   + {children: ($a[$starts[$k] + 1:($starts[$k + 1] // ($a | length))] | nested($level + 1))}]
             end;
 
           # List lines (items with their wrapped continuations) as one list block,
@@ -297,13 +307,13 @@ jobs:
                  {blocks: ([{type: "paragraph", text: (.lines | unwrap | rich)}]
                            + (if (.children | length) == 0 then [] else [.children | block] end))}
                  + (if .number == null then {}
-                    else (.number | tonumber) as $n | {label: "\($n).", value: $n, type: "1"} end))};
+                    else {value: (.number | tonumber), type: "1"} end))};
             reduce .[] as $l ([];
               ([$l | capture(item_re)] | first) as $item
               | if $item != null then
                   . + [{indent: ($item.indent | length), number: $item.number, lines: [$item.text]}]
                 else .[:-1] + [.[-1] | .lines += [$l]] end)
-            | nested | block;
+            | nested(1) | block;
 
           # One blank-line-separated chunk of the notes. A short title line followed by
           # list items becomes a collapsed section, so a long list of fixes does not
@@ -356,6 +366,22 @@ jobs:
                      | .out | join("\n"))}
               end;
 
+          # The notes cut to at most $cap characters, at the start of a list item, a
+          # heading or a blank line, so no item is left half written.
+          def cut($cap):
+            if length <= $cap then .
+            else
+              .[0:$cap] as $s
+              | ([$s | match("\n(?=\\s*(?:[-*+]|\\d+[.)])\\s|#|\\s*\n)"; "g").offset] | last
+                 // ($s | rindex("\n")) // $cap) as $at
+              | $s[0:$at]
+            end;
+
+          # Every block Telegram counts towards its limit of 500: blocks at any depth
+          # and list items.
+          def block_count:
+            [.. | objects | (.blocks?, .items?) | arrays | .[]] | length;
+
           # The whole message, with the notes cut at $cap characters.
           def message($cap):
             (if $mode == "changelog" then
@@ -363,7 +389,8 @@ jobs:
              else
                {date: "", body: .}
              end) as $notes
-            | ($notes.body[0:$cap] | sub("\\s+$"; "")) as $body
+            | ($notes.body | cut($cap) | sub("\\s+$"; "")) as $body
+            | (($notes.body | length) > $cap) as $was_cut
             | ([$body | splits("\\n\\s*\\n")] | map(sub("^\\s+"; "") | sub("\\s+$"; "")) | map(select(. != ""))) as $chunks
             | (if $mode == "changelog" then
                  (if $notes.date == "" then null else "📅 " end)
@@ -386,6 +413,11 @@ jobs:
                          {type: "paragraph", text: [$sub_icon, {type: "italic", text: $sub_text}]}
                        ] end)
                     + ($chunks | map(chunk_blocks) | add // [])
+                    + (if $was_cut then [
+                         {type: "paragraph",
+                          text: {type: "italic",
+                                 text: ["… ", {type: "url", text: "the full notes", url: $notes_url}]}}]
+                       else [] end)
                     + [{type: "divider"}]
                     + (if $install_command == "" then []
                        else [
@@ -403,14 +435,16 @@ jobs:
                 }
               };
 
-          # Rich messages take up to 32768 characters, and the JSON around the text
-          # counts against that in the worst case, so a runaway changelog is cut (in
-          # halves) until the whole payload fits: the announcement is never lost, and the
-          # full notes are one tap away on GitHub.
+          # Rich messages take up to 32768 characters of text and 500 blocks. Counting
+          # the whole JSON keeps well inside the first, and a long list of short items
+          # reaches the second first, so a runaway changelog is cut (by a quarter at a
+          # time) until both fit: the announcement is never lost, and it ends with a
+          # link to the full notes.
           def fit($cap):
             message($cap) as $m
-            | if ($m | tostring | length) <= 32000 or $cap < 500 then $m
-              else fit($cap / 2 | floor) end;
+            | if (($m | tostring | length) <= 32000 and ($m.rich_message | block_count) <= 500)
+                 or $cap < 500 then $m
+              else fit($cap * 3 / 4 | floor) end;
 
           fit(30000)
           JQ
@@ -438,6 +472,12 @@ jobs:
           version="${TAG#"$TAG_PREFIX"}"
           version="${version#v}"
           subject=""
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          if [ "$NOTES_SOURCE" = changelog ]; then
+            notes_url="$repo_url/blob/$TAG/$CHANGELOG_PATH"
+          else
+            notes_url="$repo_url/releases/tag/$TAG"
+          fi
           if [ "$NOTES_SOURCE" = changelog ]; then
             # Read at the tag, not from the checked-out branch: a manual run
             # may be on a later commit whose changelog has moved on.
@@ -473,9 +513,9 @@ jobs:
             banner_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/$BANNER_PATH"
           fi
 
-          # Rich messages take up to 32768 characters; the jq program cuts the
-          # notes at 30000 so a runaway changelog cannot lose the announcement.
-          # The full notes are one tap away on GitHub. The head only stops jq
+          # Rich messages take up to 32768 characters and 500 blocks; the jq
+          # program cuts the notes until both fit, so a runaway changelog cannot
+          # lose the announcement, and links the full notes. The head only stops jq
           # from slurping something absurd.
           head -c 2000000 "$RUNNER_TEMP/notes.txt" \
             | jq -R -s -f "$RUNNER_TEMP/announce.jq" \
@@ -485,7 +525,8 @@ jobs:
                 --arg version "$version" \
                 --arg minor "$(cut -d. -f1,2 <<< "$version")" \
                 --arg subject "${subject:-$TAG}" \
-                --arg repo_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+                --arg repo_url "$repo_url" \
+                --arg notes_url "$notes_url" \
                 --arg project_name "$PROJECT_NAME" \
                 --arg install_title "$INSTALL_TITLE" \
                 --arg install_command "$INSTALL_COMMAND" \
