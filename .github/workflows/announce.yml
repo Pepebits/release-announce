@@ -151,27 +151,39 @@ jobs:
             echo "::error::chat must be 'announcements' or 'test', not '$CHAT'"
             exit 1 ;;
           esac
-          # A button is a link or a copy-to-clipboard button. Telegram takes
-          # 1-8 buttons in a row; a row given as a nested array must fit.
-          if ! jq -e '
+          # A button is a link (http, https or tg) or a copy-to-clipboard button
+          # of 1-256 characters, checked with its placeholders filled in as the
+          # message will have them. Telegram takes 1-8 buttons in a row; a row
+          # given as a nested array must fit. --argjson takes exactly one JSON
+          # value, so anything else is refused too.
+          version="${TAG#"$TAG_PREFIX"}"
+          version="${version#v}"
+          if ! jq -en --argjson buttons "$BUTTONS" \
+              --arg version "$version" --arg minor "$(cut -d. -f1,2 <<< "$version")" \
+              --arg tag "$TAG" --arg repo_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" '
+              def subst:
+                gsub("\\{version\\}"; $version) | gsub("\\{minor\\}"; $minor)
+                | gsub("\\{tag\\}"; $tag) | gsub("\\{repo_url\\}"; $repo_url);
+              def filled: type == "string" and (subst | length > 0);
               def ok_button:
-                type == "object" and (.text | type == "string")
+                type == "object"
                 and (keys - ["text", "url", "copy_text", "style"] | length == 0)
+                and (.text | filled)
                 and ([has("url"), has("copy_text")] | map(select(.)) | length == 1)
-                and ((.url // "" | type == "string") and (.copy_text // "" | type == "string"))
-                and (.copy_text == null or (.copy_text | length) <= 256)
-                and (.style == null or (.style | IN("primary", "success", "danger")));
-              type == "array"
-              and all(.[]; ok_button or (type == "array" and length >= 1 and length <= 8 and all(.[]; ok_button)))' <<< "$BUTTONS" > /dev/null; then
-            echo "::error::buttons must be a JSON array of {text, url} or {text, copy_text}, each with an optional style (primary, success or danger); a row is an array of 1-8 of them"
+                and (if has("url") then (.url | filled) and (.url | subst | test("^(https?|tg)://\\S+$"))
+                     else (.copy_text | filled) and (.copy_text | subst | length <= 256) end)
+                and ((has("style") | not) or (.style | IN("primary", "success", "danger")));
+              $buttons | type == "array"
+              and all(.[]; ok_button or (type == "array" and length >= 1 and length <= 8 and all(.[]; ok_button)))' > /dev/null; then
+            echo "::error::buttons must be a JSON array of {text, url} or {text, copy_text}, each with an optional style (primary, success or danger); a row is an array of 1-8 of them. Texts may not be empty, a url must start with http://, https:// or tg://, and copy_text holds at most 256 characters"
             exit 1
           fi
           case "$FOLD" in always | auto | never) ;; *)
             echo "::error::fold must be 'always', 'auto' or 'never', not '$FOLD'"
             exit 1 ;;
           esac
-          if ! [[ "$MESSAGE_THREAD_ID" =~ ^[0-9]*$ ]]; then
-            echo "::error::message_thread_id must be a number"
+          if ! [[ "$MESSAGE_THREAD_ID" =~ ^([1-9][0-9]{0,14})?$ ]]; then
+            echo "::error::message_thread_id must be a topic's number"
             exit 1
           fi
           # Telegram downloads the banner itself; anything but https is refused
@@ -203,7 +215,7 @@ jobs:
           # Arguments: --arg mode (tag | changelog) --arg chat_id --arg tag
           #            --arg version --arg minor --arg subject --arg repo_url
           #            --arg project_name --arg install_title --arg install_command
-          #            --arg install_language --argjson buttons (array of {text, url})
+          #            --arg install_language --argjson buttons (see the buttons input)
           #            --arg banner_url (empty: no banner) --arg footer (empty: none)
           #            --arg notes_url (where the full notes are, linked when they are cut)
           # Optional: --arg fold (always | auto | never), --arg message_thread_id,
@@ -216,9 +228,9 @@ jobs:
           #
           # The notes travel as plain JSON strings inside explicit blocks, never as
           # Markdown or HTML, so nothing in them can be parsed as formatting or markup
-          # and there is nothing to escape. The one exception is `code` spans,
-          # [links](https://…) and **bold**, which become typed RichText pieces: still
-          # structured data, still no parse mode.
+          # and there is nothing to escape. The notes' own Markdown is read here, into
+          # typed blocks and RichText pieces: still structured data, still no parse
+          # mode.
 
           # {version}, {minor}, {tag} and {repo_url} in a caller-supplied string.
           def subst:
@@ -309,20 +321,29 @@ jobs:
           # The notes are read line by line, the way Markdown is, so a section keeps its
           # structure: paragraphs, lists nested by indentation (an item may hold several
           # paragraphs, code and sub-lists), ``` fenced code, #### sub-headings, > quotes,
-          # tables and - [x] task checkboxes. Anything else is a paragraph.
+          # tables, --- rules and - [x] task checkboxes. Anything else is a paragraph.
 
+          def nbsp: " ";
           def blank: test("^\\s*$");
           def indent: capture("^(?<i> *)").i | length;
+          def is_rule: test("^ {0,3}(?:(?:- *){3,}|(?:\\* *){3,}|(?:_ *){3,})$");
           def item_re: "^(?<indent> *)(?<marker>(?:[-*+]|(?<number>\\d+)[.)]) +)(?<text>\\S.*)$";
-          def is_item: test("^ *(?:[-*+]|\\d+[.)]) +\\S");
+          def is_item: test("^ *(?:[-*+]|\\d+[.)]) +\\S") and (is_rule | not);
           def table_rule: test("^ *\\|? *:?-+:? *(?:\\| *:?-+:? *)*\\|? *$") and test("-");
           # A line that starts a block of its own, and so cannot carry on a paragraph.
-          def starts_block: test("^ *(?:#{1,6} |>|```|~~~)");
+          def starts_block: test("^ *(?:#{1,6}(?: |$)|>|```|~~~)") or is_rule;
 
           # The cells of a table row, its outer pipes dropped; \| stays inside a cell.
           def table_cells:
             sub("^ *\\|"; "") | sub("\\| *$"; "")
             | [splits("(?<!\\\\)\\|")] | map(sub("^\\s+"; "") | sub("\\s+$"; ""));
+
+          # Text set in bold, as a section title is. Code cannot sit inside bold in
+          # Telegram, so a code span stays beside the bold pieces around it.
+          def bolded:
+            rich
+            | if type == "array" then map(if type == "object" and .type == "code" then . else {type: "bold", text: .} end)
+              else {type: "bold", text: .} end;
 
           # Lines to blocks. $top is the outermost level of the notes, where a lone short
           # line is a heading rather than a paragraph.
@@ -343,9 +364,13 @@ jobs:
                  else [] end)
                 + ($a[$end + 1:] | blocks($top))
 
-            elif .[0] | test("^ *#{1,6} ") then
-              (.[0] | capture("^ *(?<h>#{1,6}) +(?<t>.*?)[ #]*$")) as $h
-              | [{type: "heading", size: ([$h.h | length, 3] | max), text: ($h.t | rich)}]
+            elif .[0] | is_rule then [{type: "divider"}] + (.[1:] | blocks($top))
+
+            # A heading; a closing run of #s goes, a # that ends a word (C#) stays.
+            elif .[0] | test("^ *#{1,6}(?: |$)") then
+              (.[0] | capture("^ *(?<h>#{1,6})(?<t>.*)$")) as $h
+              | ($h.t | sub("^ +"; "") | sub("(?:^| +)#+ *$"; "") | sub(" +$"; "")) as $t
+              | (if $t == "" then [] else [{type: "heading", size: ([$h.h | length, 3] | max), text: ($t | rich)}] end)
                 + (.[1:] | blocks($top))
 
             elif .[0] | test("^ *>") then
@@ -355,21 +380,23 @@ jobs:
               | (if ($inner | length) == 0 then [] else [{type: "blockquote", blocks: $inner}] end)
                 + ($a[$end:] | blocks($top))
 
-            # A table: a row of pipes, then a |---|:---:| rule. Telegram takes up to 20
-            # columns; a wider one stays as it was written, in a code block.
+            # A table: a row of pipes, then a |---|:---:| rule. Short rows are filled out
+            # to the widest one. Telegram takes up to 20 columns; a wider table stays as
+            # it was written, in a code block.
             elif (.[0] | test("^ *\\|")) and length > 1 and (.[1] | table_rule) then
               . as $a
               | (first(range(2; length) | select($a[.] | test("^ *\\|") | not)) // length) as $end
               | ($a[1] | table_cells | map(if test("^:-+:$") then "center" elif test("-:$") then "right"
                                             elif test("^:") then "left" else null end)) as $align
               | ([$a[0]] + $a[2:$end] | map(table_cells)) as $rows
-              | (if ($rows | map(length) | max) > 20 then
+              | ($rows | map(length) | max) as $width
+              | (if $width > 20 then
                    [{type: "pre", text: ($a[:$end] | map(sub("^ +"; "")) | join("\n"))}]
                  else
                    [{type: "table", is_bordered: true,
                      cells: [$rows | to_entries[] | .key as $r
-                             | [.value | to_entries[]
-                                | {text: (.value | rich)}
+                             | [.value + [range($width - (.value | length)) | ""] | to_entries[]
+                                | {text: (if .value == "" then nbsp else .value | rich end)}
                                   + (if $r == 0 then {is_header: true} else {} end)
                                   + (if $align[.key] then {align: $align[.key]} else {} end)]]}]
                  end)
@@ -395,7 +422,7 @@ jobs:
                  | (($m.indent | length) + ($m.marker | length)) as $w
                  | ([$m.text | capture("^\\[(?<c>[ xX])\\] +(?<t>.*)$")] | first) as $box
                  | ([$box.t // $m.text] + ($it[1:] | map(sub("^ {0,\($w)}"; ""))) | blocks(false)) as $inner
-                 | {blocks: (if ($inner | length) == 0 then [{type: "paragraph", text: ""}] else $inner end)}
+                 | {blocks: (if ($inner | length) == 0 then [{type: "paragraph", text: nbsp}] else $inner end)}
                    + (if $box == null then {} else {has_checkbox: true} end)
                    + (if $box != null and $box.c != " " then {is_checked: true} else {} end)
                    + (if $m.number == null then {} else {value: ($m.number | tonumber), type: "1"} end)]
@@ -408,26 +435,55 @@ jobs:
               | (first(range(1; length) | select($a[.] | blank or starts_block or is_item)) // length) as $end
               | ($a[:$end] | map(sub("^\\s+"; ""))) as $p
               | (if $top and ($p | length) == 1 and ($p[0] | length) <= 40 and ($p[0] | test("[.:]$") | not)
-                 then {type: "heading", size: 3, text: ($p[0] | titled)}
+                 then {type: "heading", size: 3, text: ($p[0] | titled | rich)}
                  else {type: "paragraph", text: ($p | unwrap | rich)} end)
                 as $block
               | [$block] + ($a[$end:] | blocks($top))
             end;
 
-          # Telegram allows 16 levels of nested blocks and formatting, and each list level
-          # takes two (the list and its item) inside a folded section, so lists stop
-          # nesting at the fifth level: anything deeper sits beside it.
+          # Telegram allows 16 levels of nested blocks and formatting. Each list level
+          # takes two (the list and its item) and a quote one, so from the fifth level
+          # down nothing nests any more: deeper items sit beside the fifth level's, and
+          # deeper quotes keep their text without the quote.
           def flat_items:
             . as $item
             | [$item | .blocks |= (map(select(.type != "list"))
-                                   | if length == 0 then [{type: "paragraph", text: ""}] else . end)]
+                                   | if length == 0 then [{type: "paragraph", text: nbsp}] else . end)]
               + [$item.blocks[] | select(.type == "list") | .items[] | flat_items[]];
-          def cap_lists($level):
+          def cap($level):
             map(if .type == "list" then
-                  if $level >= 5 then .items |= [.[] | flat_items[]]
-                  else .items |= map(.blocks |= cap_lists($level + 1)) end
-                elif .type == "details" or .type == "blockquote" then .blocks |= cap_lists($level)
+                  if $level >= 5 then .items |= [.[] | (.blocks |= cap($level)) | flat_items[]]
+                  else .items |= map(.blocks |= cap($level + 1)) end
+                elif .type == "blockquote" then
+                  if $level >= 5 then .blocks | cap($level) | .[]
+                  else .blocks |= cap($level + 1) end
+                elif .type == "details" then .blocks |= cap($level)
                 else . end);
+
+          # A rule at the end of a section (the --- a changelog puts between versions,
+          # say) separates nothing.
+          def trim_rules: until(length == 0 or .[-1].type != "divider"; .[:-1]);
+
+          # For each line, whether it opens a fenced code block ("open"), sits in one or
+          # closes it ("in"), or neither (false).
+          def fenced:
+            reduce .[] as $l ({open: null, out: []};
+              if .open == null then
+                ([$l | capture("^ *(?<f>`{3,}|~{3,})")] | first) as $m
+                | if $m then .open = $m.f | .out += ["open"] else .out += [false] end
+              else
+                .open as $o
+                | .out += ["in"]
+                | if ($l | test("^ *" + $o[0:1] + "{\($o | length),} *$")) then .open = null else . end
+              end)
+            | .out;
+
+          # Link reference definitions ("[1.0.0]: https://…", at the foot of a changelog)
+          # and one-line <!-- comments --> are invisible in Markdown, so they are dropped.
+          # "[core]: fixes" is not a link definition and stays.
+          def is_link_def:
+            test("^ {0,3}\\[[^\\]]+\\]: *<?(?:[a-z][a-z0-9+.-]*:|/|#|\\.)\\S*>?(?: +(?:\"[^\"]*\"|'[^']*'|\\([^)]*\\)))? *$"; "i");
+          def is_comment: test("^ *<!--.*--> *$");
 
           # The notes as segments: what sits at the top, sections and upgrade notes.
           #
@@ -436,32 +492,35 @@ jobs:
           # blank line whose next line, blank lines aside, is a list item; it runs to the
           # next title, or to a line back at the margin after a blank line that is not an
           # item, which is top-level text again. An "Upgrade note:" (or Breaking, or
-          # Migration) paragraph opens a note that takes the paragraphs after it, up to
-          # the next section.
+          # Migration) paragraph is a note of its own, folded like a section. Nothing in a
+          # fenced code block opens or closes any of them.
           def is_title_line:
             test("^\\S") and length <= 40 and (test("[.:]$") | not) and (is_item | not)
-            and (test("^(?:#|>|```|~~~|\\|)") | not);
-          # Link reference definitions ("[1.0.0]: https://…", at the foot of a changelog)
-          # and one-line <!-- comments --> are invisible in Markdown, so they are dropped.
+            and (test("^(?:#|>|```|~~~|\\|)") | not) and (is_rule | not);
           def segments:
-            map(select(test("^ {0,3}\\[[^\\]]+\\]: *\\S+( +\".*\")? *$|^ *<!--.*--> *$") | not)
-                | gsub("\t"; "    ") | sub("\\s+$"; "")) as $a
+            fenced as $in
+            | [to_entries[]
+               | if $in[.key] == "in" then {l: .value, code: true}
+                 elif .value | is_link_def or is_comment then empty
+                 else {l: (.value | gsub("\t"; "    ") | sub("\\s+$"; "")), code: false} end] as $a
             | reduce range($a | length) as $i ({segs: [{kind: "top", lines: []}]};
-                $a[$i] as $l
-                | ($i == 0 or ($a[$i - 1] | blank)) as $after_blank
+                $a[$i].l as $l
+                | ($i == 0 or ($a[$i - 1].l | blank)) as $after_blank
                 | .segs[-1].kind as $kind
-                | if $mode == "changelog" and ($l | test("^###\\s")) then
+                | if $a[$i].code then .segs |= (.[:-1] + [.[-1] | .lines += [$l]])
+                  elif $mode == "changelog" and ($l | test("^###\\s")) then
                     .segs += [{kind: "section", title: ($l | sub("^###\\s+"; "")), lines: []}]
                   elif $mode == "tag" and $after_blank and ($l | is_title_line)
-                       and ((first($a[$i + 1:][] | select(blank | not)) // "") | is_item and indent == 0) then
+                       and ((first($a[$i + 1:][] | select(.l | blank | not)) // {l: ""}).l | is_item and indent <= 3) then
                     .segs += [{kind: "section", title: $l, lines: []}]
                   elif $after_blank and ($mode == "tag" or $kind != "section")
                        and ($l | test("^(?:upgrade|breaking|migration) note:\\s*\\S"; "i")) then
                     ($l | capture("^(?<title>[^:]+):\\s*(?<rest>.*)$")) as $m
                     | .segs += [{kind: "note", title: $m.title,
                                  lines: [($m.rest[0:1] | ascii_upcase) + $m.rest[1:]]}]
-                  elif $mode == "tag" and $kind == "section" and $after_blank
-                       and ($l | test("^\\S")) and ($l | is_item | not) then
+                  elif $after_blank and ($l | blank | not)
+                       and ($kind == "note"
+                            or ($mode == "tag" and $kind == "section" and ($l | test("^\\S")) and ($l | is_item | not))) then
                     .segs += [{kind: "top", lines: [$l]}]
                   else .segs |= (.[:-1] + [.[-1] | .lines += [$l]]) end)
             | .segs;
@@ -477,42 +536,47 @@ jobs:
                    and ([$inner[0] | .. | objects | .items? | arrays | .[]] | length) <= 3)
             then {is_open: true} else {} end;
           def segment_blocks:
-            if .kind == "top" then .lines | blocks(true)
+            if .kind == "top" then .lines | blocks(true) | trim_rules
             else
-              (.lines | blocks(false)) as $inner
-              | (if .kind == "note" then "⚠️ \(.title)" else (.title | titled) end) as $summary
-              | if ($inner | length) == 0 then [{type: "heading", size: 3, text: $summary}]
-                else [{type: "details", summary: {type: "bold", text: $summary}, blocks: $inner}
-                      + opened($inner)] end
+              (.lines | blocks(false) | trim_rules) as $inner
+              | (if .kind == "note" then "⚠️ \(.title)" else (.title | titled) end) as $title
+              | if ($inner | length) == 0 then [{type: "heading", size: 3, text: ($title | rich)}]
+                else [{type: "details", summary: ($title | bolded), blocks: $inner} + opened($inner)] end
             end;
 
-          def notes_blocks: split("\n") | segments | map(segment_blocks) | add // [] | cap_lists(1);
+          def notes_blocks: split("\n") | segments | map(segment_blocks) | add // [] | cap(1) | trim_rules;
 
           # The section of a Keep a Changelog file for this version: the lines after its
-          # "## [X.Y.Z] — date" heading up to the next "## ". Returns {date, body}, or null
-          # when the version has no section.
+          # "## [X.Y.Z] — date" heading up to the next "## " outside a code block. Returns
+          # {date, body}, or null when the version has no section.
           def changelog_section:
             split("\n") as $lines
+            | ($lines | fenced) as $in
             | ("^##\\s+\\[?v?" + ($version | gsub("\\."; "\\.")) + "\\]?(\\s|$)") as $heading
-            | ([$lines | to_entries[] | select(.value | test($heading)) | .key] | first) as $at
+            | (first(range($lines | length) | select(($in[.] | not) and ($lines[.] | test($heading)))) // null) as $at
             | if $at == null then null
               else
-                ($lines[$at + 1:]
-                 | (([to_entries[] | select(.value | test("^## ")) | .key] | first) as $end
-                    | if $end == null then . else .[:$end] end)) as $section
+                ((first(range($at + 1; $lines | length) | select(($in[.] | not) and ($lines[.] | test("^## "))))
+                  // ($lines | length)) as $end
+                 | $lines[$at + 1:$end]) as $section
                 | {date: (($lines[$at] | capture("(?<d>\\d{4}-\\d{2}-\\d{2})").d) // ""),
                    body: ($section | join("\n"))}
               end;
 
-          # The notes cut to at most $cap characters, at the start of a list item, a
-          # heading or a blank line, so no item is left half written.
+          # The notes cut to at most $cap characters: at the start of a list item, a
+          # heading or a blank line when one is close to the cap, so no item is left half
+          # written; otherwise at the end of a line, or failing that of a word.
           def cut($cap):
             if length <= $cap then .
             else
               .[0:$cap] as $s
-              | ([$s | match("\n(?=\\s*(?:[-*+]|\\d+[.)])\\s|#|\\s*\n)"; "g").offset] | last
-                 // ($s | rindex("\n")) // $cap) as $at
-              | $s[0:$at]
+              | ([$s | match("\n(?=\\s*(?:[-*+]|\\d+[.)])\\s|#|\\s*\n)"; "g").offset] | last // 0) as $item
+              | ($s | rindex("\n") // 0) as $line
+              | ($s | sub("\\S*$"; "") | length) as $word
+              | $s[0:(if $item >= $cap * 0.8 then $item
+                      elif $line >= $cap * 0.8 then $line
+                      elif $word > 0 then $word
+                      else $cap end)]
             end;
 
           # Every block Telegram counts towards its limit of 500: blocks at any depth,
@@ -538,7 +602,7 @@ jobs:
               else .rows += [[$b]] | .open = true end)
             | .rows;
           def button:
-            {text: .text}
+            {text: (.text | subst)}
             + (if .url then {url: (.url | subst)} else {copy_text: {text: (.copy_text | subst)}} end)
             + (if .style then {style: .style} else {} end);
 
@@ -661,11 +725,15 @@ jobs:
               echo "::warning::$CHANGELOG_PATH has no section for $version; announcing it without notes"
             fi
           else
+            # A lightweight tag has no message of its own: for-each-ref would
+            # give the commit's, which are not release notes.
             if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
               echo "::warning::$TAG is a lightweight tag; announcing it without notes"
+              : > "$RUNNER_TEMP/notes.txt"
+            else
+              subject="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG")"
+              git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > "$RUNNER_TEMP/notes.txt"
             fi
-            subject="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG")"
-            git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > "$RUNNER_TEMP/notes.txt"
           fi
 
           # An external banner (a generated social card, say) wins over the
@@ -764,29 +832,49 @@ jobs:
               || true
             [ "$(jq -r '.ok' "$RUNNER_TEMP/response.json" 2>/dev/null)" = true ]
           }
-          reason() { jq -r '"\(.error_code) \(.description)"' "$RUNNER_TEMP/response.json" 2>/dev/null || echo 'no response'; }
+          # An empty body, an HTML error page or no file at all is "no response".
+          reason() {
+            local r
+            r="$(jq -r 'select(type == "object") | "\(.error_code) \(.description)"' "$RUNNER_TEMP/response.json" 2>/dev/null)" || r=""
+            echo "${r:-no response}"
+          }
           sent() { echo "Sent as message $(jq -r '.result.message_id' "$RUNNER_TEMP/response.json")"; }
+
+          refused() { [ "$(jq -r '.error_code' "$RUNNER_TEMP/response.json" 2>/dev/null)" = 400 ]; }
 
           if send sendRichMessage "$RUNNER_TEMP/message.json"; then sent; exit 0; fi
           first="$(reason)"
-          # Only a 400 means Telegram refused this message; anything else (an
-          # outage, a revoked token, a chat the bot left) would fail the same
-          # way again.
-          if [ "$(jq -r '.error_code' "$RUNNER_TEMP/response.json" 2>/dev/null)" != 400 ]; then
+          # Only a 400 is Telegram refusing this message. Anything else (an
+          # outage, a revoked token, a bot removed from the chat) would fail the
+          # same way again, and with no answer at all the message may even have
+          # arrived.
+          if ! refused; then
             echo "::warning::Telegram announcement not sent: $first"
             exit 1
           fi
+          # attempt <method> <payload file> <what it is>: the next, plainer
+          # message. Each one only follows a refusal, so a message that may have
+          # arrived is never followed by another.
+          attempt() {
+            if send "$1" "$2"; then
+              echo "::warning::Telegram refused the announcement ($first); sent $3 instead"
+              sent; exit 0
+            fi
+            if ! refused; then
+              echo "::warning::Telegram announcement not sent: $first; then $(reason)"
+              exit 1
+            fi
+          }
           # First without the banner, the one part fetched from elsewhere; then,
-          # whatever else Telegram disliked, a plain-text message still gets the
-          # release out.
-          if jq -e 'any(.rich_message.blocks[]; .type == "photo")' "$RUNNER_TEMP/message.json" > /dev/null \
-             && send sendRichMessage "$RUNNER_TEMP/no-banner.json"; then
-            echo "::warning::Telegram refused the announcement ($first); sent it without the banner"
-            sent; exit 0
+          # whatever else Telegram disliked, as plain text, and last without the
+          # buttons, which the plain text shares with the rich message.
+          if jq -e 'any(.rich_message.blocks[]; .type == "photo")' "$RUNNER_TEMP/message.json" > /dev/null; then
+            attempt sendRichMessage "$RUNNER_TEMP/no-banner.json" "it without the banner"
           fi
-          if send sendMessage "$RUNNER_TEMP/fallback.json"; then
-            echo "::warning::Telegram refused the announcement ($first); sent a plain-text one instead"
-            sent; exit 0
+          attempt sendMessage "$RUNNER_TEMP/fallback.json" "a plain-text one"
+          if jq -e 'has("reply_markup")' "$RUNNER_TEMP/fallback.json" > /dev/null; then
+            jq 'del(.reply_markup)' "$RUNNER_TEMP/fallback.json" > "$RUNNER_TEMP/fallback-bare.json"
+            attempt sendMessage "$RUNNER_TEMP/fallback-bare.json" "a plain-text one without buttons"
           fi
-          echo "::warning::Telegram announcement not sent: $first; the plain-text one failed too: $(reason)"
+          echo "::warning::Telegram announcement not sent: $first; every fallback was refused too: $(reason)"
           exit 1

@@ -19,9 +19,10 @@ Top to bottom:
    🐛 fixed, 🔒 security, 📦 dependencies, 📝 anything else), so a long list
    does not bury the rest; `fold` can leave short ones open. An "Upgrade
    note:" or "Breaking note:" paragraph is folded the same way under a ⚠️
-   title, with the paragraphs after it. Wrapped lines are joined back
-   together. Notes too long for one message are cut at a whole item and end
-   with a link to the full notes.
+   title; what follows its blank line stays in sight. Wrapped lines are joined
+   back together. Notes too long for one message are cut, at a whole item
+   where one ends close enough to the limit, otherwise at a line or a word,
+   and end with a link to the full notes.
 4. A divider, the install command in a code block (Telegram gives it a copy
    button), buttons, and an optional footer line.
 
@@ -36,8 +37,10 @@ above, up to five levels deep.
 
 A section keeps its structure: prose before or instead of a list, several
 paragraphs and ```` ``` ```` fenced code inside an item, `####` sub-headings,
-`>` quotes, Markdown tables and `- [x]` task checkboxes all come through as
-the matching Telegram blocks. Link definitions (`[1.0.0]: https://…`) and
+`>` quotes, Markdown tables, `---` rules and `- [x]` task checkboxes all come
+through as the matching Telegram blocks. Inside a fenced code block nothing is
+read as Markdown, a `## ` or `### ` line included, and the code is kept exactly
+as written, tabs and all. Link definitions (`[1.0.0]: https://…`) and
 `<!-- comments -->` are left out.
 
 The message needs Bot API 10.3 or later, which api.telegram.org runs.
@@ -197,12 +200,12 @@ its own copy: a card that changes later does not change old posts.
 | `notes_source` | `tag` | `tag` (the annotated tag's message) or `changelog`. |
 | `changelog_path` | `CHANGELOG.md` | Only for `changelog`. |
 | `install_title` | `📦 Install` | Heading above the command. |
-| `install_command` | empty | `{version}` and `{tag}` are replaced. Empty omits the install section. |
+| `install_command` | empty | `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. Empty omits the install section. |
 | `install_language` | `bash` | Highlighting for the command. |
-| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}` links or `{text, copy_text}` buttons that copy up to 256 characters, each with an optional `style`: `primary`, `success` or `danger`. They fill rows of up to 8; a nested array is a row of its own. In the url and copy_text, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
+| `buttons` | a "📝 Notes" button to the GitHub release | JSON array of `{text, url}` links or `{text, copy_text}` buttons that copy up to 256 characters, each with an optional `style`: `primary`, `success` or `danger`. They fill rows of up to 8; a nested array is a row of its own. Texts may not be empty, a url starts with `https://`, `http://` or `tg://`, and copy_text holds 1-256 characters, all checked before anything is built. In the text, url and copy_text, `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. `[]` for none. |
 | `banner_path` | `docs/banner.png` | Used only if it exists at the tag and `banner_url` is empty; linked at the tag via raw.githubusercontent.com. |
 | `banner_url` | empty | An image at a fixed `https://` URL, used instead of `banner_path`. `{repo}`, `{owner}`, `{version}`, `{minor}` and `{tag}` are replaced. See [An external banner](#an-external-banner). |
-| `footer` | empty | `{version}`, `{minor}` and `{tag}` are replaced. |
+| `footer` | empty | `{version}`, `{minor}`, `{tag}` and `{repo_url}` are replaced. |
 | `fold` | `always` | `always` folds every section, `auto` leaves a list of three items or fewer open, `never` leaves them all open. |
 | `message_thread_id` | empty | The topic to post in, in a forum supergroup. |
 | `disable_notification` | `false` | Post without a notification sound. |
@@ -259,10 +262,11 @@ builds the message is inlined in it), so a pin covers everything that runs.
 
 `test/run.sh` extracts the jq program from `announce.yml`, builds the message
 from the fixtures in `test/fixtures/` (the notes of share-stories v2.0.0,
-search-builder's changelog, and two that use most of Markdown) and asserts on the JSON. It also runs the
-workflow's input check against valid and invalid tags, with and without a
-`tag_prefix`, and checks every message against Telegram's limits: 500
-blocks, 16 levels of nesting, and the fields a list item may carry. It also
-runs the send step against a stand-in `curl`, to cover each fallback. It needs
-only `jq` 1.7 and bash. CI runs it, and lints the
-workflows with actionlint.
+search-builder's changelog, and two that use most of Markdown) and asserts on
+the JSON, checking every message it builds against Telegram's limits: 500
+blocks (list items and table rows included), 16 levels of nesting, and the
+fields a list item may carry. It also runs the workflow's input check against
+valid and invalid tags, buttons and options, and the send step, under
+`bash -e` as on the runner, against a stand-in `curl` for each fallback. It
+needs only `jq` 1.7 and bash. CI runs it, and lints the workflows with
+actionlint.
