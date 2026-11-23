@@ -776,8 +776,9 @@ jobs:
             echo "::warning::Telegram announcement not sent: $first"
             exit 1
           fi
-          # A banner Telegram cannot fetch is the usual cause; then whatever
-          # else it disliked, a plain-text message still gets the release out.
+          # First without the banner, the one part fetched from elsewhere; then,
+          # whatever else Telegram disliked, a plain-text message still gets the
+          # release out.
           if jq -e 'any(.rich_message.blocks[]; .type == "photo")' "$RUNNER_TEMP/message.json" > /dev/null \
              && send sendRichMessage "$RUNNER_TEMP/no-banner.json"; then
             echo "::warning::Telegram refused the announcement ($first); sent it without the banner"

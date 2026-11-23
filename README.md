@@ -185,9 +185,7 @@ it on; an empty or missing variable falls back to `banner_path`:
 
 Telegram downloads the image itself when the message is sent, so the URL must
 be public and answer with an image (`image/png`, `image/jpeg`…), and it keeps
-its own copy: a card that changes later does not change old posts. If
-Telegram cannot fetch it, the message goes out without the banner and the run
-shows a warning.
+its own copy: a card that changes later does not change old posts.
 
 ### Inputs
 
