@@ -7,6 +7,37 @@ get every 1.x release as soon as it is tagged.
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-23
+
+### Fixed
+
+- A `## ` or `### ` line inside fenced code no longer ends the version's notes
+  or opens a section: everything after it was lost or misplaced. Code is kept
+  exactly as written, tabs, `[x]: …` lines and `<!-- -->` included.
+- A button with a null or empty field, a url that is not `http(s)://` or
+  `tg://`, a `copy_text` over 256 characters once its placeholders are filled,
+  or a `buttons` input that is not one JSON array is refused before anything
+  is built, instead of failing the build or every send.
+- An upgrade note is one paragraph again, as in 1.4: what follows its blank
+  line is no longer folded away with it.
+- Quotes count towards Telegram's 16 levels as lists do.
+- `#### Support for C#` keeps its `#`; empty headings, items and table cells
+  never reach Telegram as empty text, and short table rows are filled out.
+- A cut falls at a line or a word when no item ends near the limit, instead
+  of dropping a whole long table or item.
+- `[core]: fixes` is no longer taken for a link definition and dropped.
+- A lightweight tag is announced without notes, as the warning says, instead
+  of with its commit's message.
+- After a refused message, a fallback that gets no answer is not followed by
+  another, so a message that may have arrived is not sent twice. If the plain
+  text is refused too, it is sent once more without its buttons.
+
+### Changed
+
+- `---`, `***` and `___` rules are dividers; one at the end of a section is
+  dropped. Section titles read inline Markdown. A list indented under its
+  title folds like one at the margin. Button texts take placeholders.
+
 ## [1.5.0] - 2026-11-23
 
 ### Added
@@ -97,7 +128,8 @@ get every 1.x release as soon as it is tagged.
 - The install command, buttons, banner and footer are inputs, with
   `{version}`, `{minor}`, `{tag}` and `{repo_url}` placeholders.
 
-[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Pepebits/release-announce/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Pepebits/release-announce/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Pepebits/release-announce/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Pepebits/release-announce/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Pepebits/release-announce/compare/v1.2.0...v1.3.0
